@@ -160,7 +160,8 @@ function normCitas(citas){
     out[k] = (citas[k]||[]).map(c=>{
       let servicios = c.servicios;
       if(!Array.isArray(servicios)) servicios = c.servicio ? [c.servicio] : [];
-      return { id:c.id, hora:c.hora||"", clienta:c.clienta||"", servicios:servicios, notas:c.notas||"", pago: c.pago||null };
+      return { id:c.id, hora:c.hora||"", clienta:c.clienta||"", servicios:servicios, notas:c.notas||"", pago: c.pago||null,
+        propina: typeof c.propina==="number" ? c.propina : 0 };
     });
   }
   return out;
@@ -181,7 +182,7 @@ function normGastos(gastos){
 }
 
 /* ============ estado ============ */
-let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true, clientes:{}, gastos:[], ultimoBackup:null };
+let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true, clientes:{}, gastos:[], ultimoBackup:null, vacaciones:[] };
 let selectedKey = toKey(new Date());
 
 function load(){
@@ -197,6 +198,7 @@ function load(){
         clientes: normClientes(p.clientes),
         gastos: normGastos(p.gastos),
         ultimoBackup: typeof p.ultimoBackup==="string" ? p.ultimoBackup : null,
+        vacaciones: Array.isArray(p.vacaciones) ? p.vacaciones.filter(x=>typeof x==="string") : [],
       };
     }
   }catch(e){}
@@ -208,6 +210,16 @@ function save(){
 
 function precioDe(nombre){ const s=state.servicios.find(x=>x.nombre===nombre); return s && typeof s.precio==="number"? s.precio : 0; }
 function totalCita(c){ return (c.servicios||[]).reduce((t,n)=>t+precioDe(n),0); }
+function resumenServicios(servicios){
+  const conteo = {};
+  (servicios||[]).forEach(n=>{ conteo[n] = (conteo[n]||0)+1; });
+  return Object.keys(conteo).map(n=> conteo[n]>1 ? n+" ×"+conteo[n] : n).join(" + ");
+}
+function esVacacion(k){ return state.vacaciones.indexOf(k)>=0; }
+function toggleVacacion(k){
+  state.vacaciones = esVacacion(k) ? state.vacaciones.filter(x=>x!==k) : state.vacaciones.concat([k]);
+  save();
+}
 function totalMes(refDate, metodo){
   let total = 0;
   for(const k in state.citas){
@@ -218,6 +230,16 @@ function totalMes(refDate, metodo){
         if(metodo && c.pago!==metodo) return;
         total += totalCita(c);
       });
+    }
+  }
+  return total;
+}
+function propinasMes(refDate){
+  let total = 0;
+  for(const k in state.citas){
+    const d = fromKey(k);
+    if(d.getFullYear()===refDate.getFullYear() && d.getMonth()===refDate.getMonth()){
+      state.citas[k].forEach(c=>{ if(c.pago) total += (c.propina||0); });
     }
   }
   return total;
@@ -237,13 +259,17 @@ function diasDesdeBackup(){
   return Math.floor(ms / 86400000);
 }
 
-const FRANJAS_DISPONIBILIDAD = [
-  {hora:"09:00", label:"9:00 am"},
-  {hora:"11:30", label:"11:30 am"},
-  {hora:"14:00", label:"2:00 pm"},
-  {hora:"16:00", label:"4:00 pm"},
-  {hora:"18:30", label:"6:30 pm"},
-];
+const HORARIOS_TRABAJO = ["09:00","11:30","14:00","16:00","18:00"];
+function formatHora12(hora24){
+  if(!hora24) return "—";
+  const partes = hora24.split(":");
+  let h = parseInt(partes[0],10);
+  const m = partes[1] || "00";
+  if(!Number.isFinite(h)) return hora24;
+  const ampm = h>=12 ? "pm" : "am";
+  let h12 = h%12; if(h12===0) h12=12;
+  return h12+":"+m+" "+ampm;
+}
 function diasDisponibles(viewMonth){
   const hoy = new Date(); hoy.setHours(0,0,0,0);
   const year = viewMonth.getFullYear(), month = viewMonth.getMonth();
@@ -256,8 +282,9 @@ function diasDisponibles(viewMonth){
     if(dow===0) continue;
     if(dow===6 && !state.incluirSabado) continue;
     const k = toKey(d);
+    if(esVacacion(k)) continue;
     const ocupadas = (state.citas[k]||[]).map(c=>c.hora);
-    const libres = FRANJAS_DISPONIBILIDAD.filter(f=>ocupadas.indexOf(f.hora)<0);
+    const libres = HORARIOS_TRABAJO.filter(h=>ocupadas.indexOf(h)<0).map(h=>({hora:h, label:formatHora12(h)}));
     if(libres.length) out.push({ fecha:d, dateKey:k, libres });
   }
   return out;
@@ -487,13 +514,22 @@ function buildMain(){
 
   // encabezado del día + total
   const citas = (state.citas[selectedKey]||[]).slice().sort((a,b)=>(a.hora||"").localeCompare(b.hora||""));
-  const totalDia = citas.reduce((t,c)=> c.pago ? t+totalCita(c) : t, 0);
+  const totalDia = citas.reduce((t,c)=> c.pago ? t+totalCita(c)+(c.propina||0) : t, 0);
+  const propinasDia = citas.reduce((t,c)=> c.pago ? t+(c.propina||0) : t, 0);
   const dayHead = el("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:"12px"}});
   dayHead.appendChild(el("h2",{class:"serif",style:{fontSize:"20px",margin:"0"}}, cap(fmtDiaLargo(selDate))));
   const rightInfo = el("div",{style:{textAlign:"right",fontSize:"12px",color:"var(--muted)"}}, citas.length+" "+(citas.length===1?"cita":"citas"));
   if(totalDia>0) rightInfo.appendChild(el("span",{style:{display:"block",fontWeight:"600",color:"var(--accent)"}}, "Cobrado: "+eur(totalDia)));
+  if(propinasDia>0) rightInfo.appendChild(el("span",{style:{display:"block",fontSize:"11px",color:"var(--muted)"}}, "Incluye "+eur(propinasDia)+" de propina"));
   dayHead.appendChild(rightInfo);
   wrap.appendChild(dayHead);
+
+  if(esVacacion(selectedKey)){
+    wrap.appendChild(el("div",{class:"card",style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",marginBottom:"12px",background:"var(--line)"}},
+      el("span",{style:{fontSize:"13px",color:"var(--ink)"}}, "Marcado como vacaciones"),
+      el("button",{style:{fontSize:"12px",color:"var(--accent)",fontWeight:"600"}, onClick:()=>{ toggleVacacion(selectedKey); render(); }}, "Quitar")
+    ));
+  }
 
   // lista de citas
   const list = el("div",{style:{display:"flex",flexDirection:"column",gap:"8px"}});
@@ -508,10 +544,10 @@ function buildMain(){
       const card = el("button",{class:"card",style:{textAlign:"left",padding:"12px 16px",display:"flex",alignItems:"flex-start",gap:"12px"},
         onClick:()=>openCita(selectedKey,c)});
       card.appendChild(el("span",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"14px",fontWeight:"600",color:"var(--accent)",paddingTop:"2px",whiteSpace:"nowrap"},class:"tabnum"},
-        icon("clock",13), c.hora||"—"));
+        icon("clock",13), formatHora12(c.hora)));
       const mid = el("span",{style:{flex:"1",minWidth:"0"}},
         el("span",{class:"truncate",style:{display:"block",fontSize:"15px",fontWeight:"500"}}, c.clienta),
-        el("span",{class:"truncate",style:{display:"block",fontSize:"14px",color:"var(--muted)"}}, (c.servicios||[]).join(" + ")||"Sin servicio")
+        el("span",{class:"truncate",style:{display:"block",fontSize:"14px",color:"var(--muted)"}}, resumenServicios(c.servicios)||"Sin servicio")
       );
       if(c.notas) mid.appendChild(el("span",{class:"truncate",style:{display:"block",fontSize:"12px",marginTop:"2px",color:"var(--muted)"}}, c.notas));
       const pagoOn = !!c.pago;
@@ -522,6 +558,7 @@ function buildMain(){
       card.appendChild(mid);
       const right = el("span",{style:{display:"flex",flexDirection:"column",alignItems:"flex-end",paddingTop:"2px"}});
       if(precio>0) right.appendChild(el("span",{class:"tabnum",style:{fontSize:"14px",fontWeight:"600"}}, eur(precio)));
+      if(c.propina>0) right.appendChild(el("span",{class:"tabnum",style:{fontSize:"11px",color:"var(--accent)"}}, "+"+eur(c.propina)+" prop."));
       right.appendChild(el("span",{style:{marginTop:"4px",color:"var(--muted)"}}, icon("pencil",14)));
       card.appendChild(right);
       list.appendChild(card);
@@ -559,8 +596,21 @@ function openCita(dateKey, cita, draft){
   sheet.appendChild(head);
   sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 16px",color:"var(--muted)"}}, cap(fmtDiaLargo(fromKey(dateKey)))));
 
-  const horaInput = el("input",{class:"field",type:"time"});
-  horaInput.value = initial.hora || "10:00";
+  let horaSel = initial.hora || HORARIOS_TRABAJO[0];
+  const horaChips = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
+  function renderHoraChips(){
+    horaChips.innerHTML = "";
+    const opciones = HORARIOS_TRABAJO.slice();
+    if(horaSel && opciones.indexOf(horaSel)<0) opciones.push(horaSel); // conserva una hora antigua que ya no esté en la lista
+    opciones.forEach(h=>{
+      const on = horaSel===h;
+      const chip = el("button",{type:"button", class:"chip"+(on?" chip-on":""), onClick:()=>{ horaSel=h; renderHoraChips(); }});
+      if(on) chip.appendChild(icon("check",14));
+      chip.appendChild(document.createTextNode(formatHora12(h)));
+      horaChips.appendChild(chip);
+    });
+  }
+  renderHoraChips();
   const clientaInput = el("input",{class:"field",placeholder:"Nombre de la clienta"});
   clientaInput.value = initial.clienta || "";
   const phoneInput = el("input",{class:"field",type:"tel",placeholder:"Ej. 612 345 678"});
@@ -570,18 +620,36 @@ function openCita(dateKey, cita, draft){
 
   const chips = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
   const totalLine = el("p",{style:{fontSize:"14px",margin:"8px 0 0",fontWeight:"600",color:"var(--accent)"}});
+  function cantidadDe(nombre){ return sel.filter(n=>n===nombre).length; }
+  function setCantidad(nombre, n){
+    sel = sel.filter(x=>x!==nombre);
+    for(let i=0;i<n;i++) sel.push(nombre);
+  }
   function renderChips(){
     chips.innerHTML="";
     state.servicios.forEach(s=>{
-      const on = sel.indexOf(s.nombre)>=0;
-      const chip = el("button",{class:"chip"+(on?" chip-on":""), onClick:()=>{
-        const i=sel.indexOf(s.nombre);
-        if(i>=0) sel.splice(i,1); else sel.push(s.nombre);
-        renderChips();
-      }});
-      if(on) chip.appendChild(icon("check",14));
-      chip.appendChild(document.createTextNode(s.nombre));
-      if(typeof s.precio==="number") chip.appendChild(el("span",{class:"chip-price"}," · "+eur(s.precio)));
+      const qty = cantidadDe(s.nombre);
+      const on = qty>0;
+      const chip = el("div",{class:"chip"+(on?" chip-on":"")});
+      const label = el("button",{type:"button",
+        style:{display:"flex",alignItems:"center",gap:"6px",background:"none",border:"none",color:"inherit",font:"inherit",padding:"0"},
+        onClick:()=>{ if(qty===0){ setCantidad(s.nombre,1); renderChips(); } }
+      });
+      if(on) label.appendChild(icon("check",14));
+      label.appendChild(document.createTextNode(s.nombre));
+      if(typeof s.precio==="number") label.appendChild(el("span",{class:"chip-price"}," · "+eur(s.precio)));
+      chip.appendChild(label);
+      if(on){
+        chip.appendChild(el("span",{style:{display:"flex",alignItems:"center",gap:"4px",marginLeft:"4px"}},
+          el("button",{type:"button","aria-label":"Quitar una "+s.nombre,
+            style:{width:"22px",height:"22px",display:"grid",placeItems:"center",borderRadius:"9999px",background:"rgba(255,255,255,.35)"},
+            onClick:()=>{ setCantidad(s.nombre, Math.max(0,qty-1)); renderChips(); }}, "–"),
+          el("span",{class:"tabnum",style:{minWidth:"14px",textAlign:"center",fontSize:"13px"}}, String(qty)),
+          el("button",{type:"button","aria-label":"Añadir una "+s.nombre,
+            style:{width:"22px",height:"22px",display:"grid",placeItems:"center",borderRadius:"9999px",background:"rgba(255,255,255,.35)"},
+            onClick:()=>{ setCantidad(s.nombre, qty+1); renderChips(); }}, "+")
+        ));
+      }
       chips.appendChild(chip);
     });
     const total = sel.reduce((t,n)=>t+precioDe(n),0);
@@ -604,6 +672,26 @@ function openCita(dateKey, cita, draft){
   }
   renderPagoChips();
 
+  let propinaOn = !!(initial.propina && initial.propina>0);
+  const propinaInput = el("input",{class:"field",type:"number",step:"0.5",min:"0",inputmode:"decimal",placeholder:"0.00",
+    style:{marginTop:"8px", display: propinaOn ? "block":"none"}});
+  propinaInput.value = initial.propina ? initial.propina : "";
+  const propinaToggle = el("button",{type:"button", class:"chip"+(propinaOn?" chip-on":"")});
+  function renderPropinaToggle(){
+    propinaToggle.className = "chip"+(propinaOn?" chip-on":"");
+    propinaToggle.innerHTML = "";
+    if(propinaOn) propinaToggle.appendChild(icon("check",14));
+    propinaToggle.appendChild(document.createTextNode("La clienta dejó propina"));
+    propinaInput.style.display = propinaOn ? "block" : "none";
+  }
+  propinaToggle.addEventListener("click", ()=>{
+    propinaOn = !propinaOn;
+    if(!propinaOn) propinaInput.value="";
+    renderPropinaToggle();
+    if(propinaOn) propinaInput.focus();
+  });
+  renderPropinaToggle();
+
   const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
 
   const pillBtnStyle = {display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"13px",padding:"7px 14px",
@@ -623,8 +711,8 @@ function openCita(dateKey, cita, draft){
   }
   accionesClienta.appendChild(el("button",{type:"button", style:pillBtnStyle,
     onClick:()=>{
-      const snapshot = { hora:horaInput.value, clienta:clientaInput.value, telefono:phoneInput.value,
-        servicios:sel.slice(), notas:notasInput.value, pago:pagoSel };
+      const snapshot = { hora:horaSel, clienta:clientaInput.value, telefono:phoneInput.value,
+        servicios:sel.slice(), notas:notasInput.value, pago:pagoSel, propina: propinaOn ? (parseFloat(propinaInput.value)||0) : 0 };
       openClientesView({
         onSelect:(nombre, tel)=>{ snapshot.clienta=nombre; snapshot.telefono=tel||""; openCita(dateKey, cita, snapshot); },
         onCancel:()=> openCita(dateKey, cita, snapshot)
@@ -653,11 +741,12 @@ function openCita(dateKey, cita, draft){
   phoneInput.addEventListener("input", renderPhoneActions);
 
   const body = el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}},
-    el("div",{}, el("label",{class:"label"},"Hora"), horaInput),
+    el("div",{}, el("label",{class:"label"},"Hora"), horaChips),
     el("div",{}, el("label",{class:"label"},"Clienta"), clientaInput, accionesClienta),
     el("div",{}, el("label",{class:"label"},"Teléfono (opcional)"), phoneInput, phoneActions),
     el("div",{}, el("label",{class:"label"},"Servicios (puedes elegir varios)"), chips, totalLine),
     el("div",{}, el("label",{class:"label"},"Cobro"), pagoChips),
+    el("div",{}, el("label",{class:"label"},"Propina (opcional)"), propinaToggle, propinaInput),
     el("div",{}, el("label",{class:"label"},"Notas (opcional)"), notasInput),
     err
   );
@@ -668,8 +757,9 @@ function openCita(dateKey, cita, draft){
     const nombreClienta = clientaInput.value.trim();
     const obj = {
       id: (cita && cita.id) ? cita.id : (Date.now()+"-"+Math.random().toString(36).slice(2,7)),
-      hora: horaInput.value, clienta: nombreClienta,
-      servicios: sel, notas: notasInput.value.trim(), pago: pagoSel || null
+      hora: horaSel, clienta: nombreClienta,
+      servicios: sel, notas: notasInput.value.trim(), pago: pagoSel || null,
+      propina: propinaOn ? (parseFloat(propinaInput.value)||0) : 0
     };
     const arr = state.citas[dateKey] ? state.citas[dateKey].slice() : [];
     if(cita && cita.id){
@@ -805,10 +895,10 @@ function openSearch(){
     out.forEach(c=>{
       results.appendChild(el("button",{style:{textAlign:"left",borderRadius:"12px",padding:"8px 12px",display:"flex",alignItems:"center",gap:"12px",background:"#fff",border:"1px solid var(--line)"},
         onClick:()=>{ selectedKey=c.dateKey; closeOverlays(); render(); }},
-        el("span",{class:"tabnum",style:{fontSize:"12px",width:"44px",color:"var(--accent)"}}, c.hora||"—"),
+        el("span",{class:"tabnum",style:{fontSize:"12px",width:"58px",color:"var(--accent)"}}, formatHora12(c.hora)),
         el("span",{style:{flex:"1",minWidth:"0"}},
           el("span",{class:"truncate",style:{display:"block",fontSize:"14px",fontWeight:"500"}}, c.clienta),
-          el("span",{class:"truncate",style:{display:"block",fontSize:"12px",color:"var(--muted)"}}, (c.servicios||[]).join(" + ")+" · "+cap(fmtDiaLargo(fromKey(c.dateKey))))
+          el("span",{class:"truncate",style:{display:"block",fontSize:"12px",color:"var(--muted)"}}, resumenServicios(c.servicios)+" · "+cap(fmtDiaLargo(fromKey(c.dateKey))))
         )
       ));
     });
@@ -1108,12 +1198,25 @@ function openMonthView(mesInicial){
   sheet.appendChild(el("button",{class:"chip",style:{marginBottom:"14px"},
     onClick:()=>openDisponibilidad(viewMonth)}, icon("download",14), "Compartir disponibilidad"));
 
+  let modoVacaciones = false;
+  const vacBtn = el("button",{class:"chip", onClick:()=>{
+    modoVacaciones = !modoVacaciones;
+    vacBtn.className = "chip"+(modoVacaciones?" chip-on":"");
+    vacHint.style.display = modoVacaciones ? "block" : "none";
+  }}, icon("calendar",14), "Marcar vacaciones");
+  const vacHint = el("p",{style:{fontSize:"11px",color:"var(--accent)",margin:"-6px 0 14px",display:"none"}},
+    "Toca los días que quieras marcar. Vuelve a tocar el botón para salir del modo.");
+  sheet.appendChild(vacBtn);
+  sheet.appendChild(vacHint);
+
   const totalMesLine = el("p",{style:{fontSize:"15px",fontWeight:"600",color:"var(--accent)",margin:"0 0 2px",textAlign:"center"}});
   sheet.appendChild(totalMesLine);
   const desgloseLine = el("p",{style:{fontSize:"12px",margin:"0 0 6px",textAlign:"center",color:"var(--muted)"}});
   sheet.appendChild(desgloseLine);
-  const gananciaLine = el("p",{style:{fontSize:"13px",fontWeight:"600",margin:"0 0 14px",textAlign:"center",color:"var(--ink)"}});
+  const gananciaLine = el("p",{style:{fontSize:"13px",fontWeight:"600",margin:"0 0 2px",textAlign:"center",color:"var(--ink)"}});
   sheet.appendChild(gananciaLine);
+  const propinaLine = el("p",{style:{fontSize:"12px",margin:"0 0 14px",textAlign:"center",color:"var(--muted)"}});
+  sheet.appendChild(propinaLine);
 
   const headersRow = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:"6px"}});
   ["L","M","X","J","V","S","D"].forEach(d=>{
@@ -1138,6 +1241,7 @@ function openMonthView(mesInicial){
     totalMesLine.textContent = "Total cobrado: " + eur(cobrado);
     desgloseLine.textContent = "Efectivo "+eur(totalMes(viewMonth,"efectivo"))+" · Tarjeta "+eur(totalMes(viewMonth,"tarjeta"))+" · Bizum "+eur(totalMes(viewMonth,"bizum"));
     gananciaLine.textContent = "Gastos: -"+eur(gastado)+"   →   Ganancia neta: "+eur(cobrado-gastado);
+    propinaLine.textContent = "Propinas (a parte): "+eur(propinasMes(viewMonth));
     cellsWrap.innerHTML = "";
     const gridStart = startOfWeek(viewMonth);
     for(let i=0;i<42;i++){
@@ -1149,15 +1253,19 @@ function openMonthView(mesInicial){
       const isToday = k===todayKey;
       const isSel = k===selectedKey;
       const covered = laboral && count>0;
+      const enVacacion = esVacacion(k);
       const cell = el("button",{
         style:{position:"relative",aspectRatio:"1",borderRadius:"10px",
           display:"flex",alignItems:"center",justifyContent:"center",
           opacity: inMonth ? "1" : ".3",
-          background: covered ? "var(--accent)" : "var(--paper)",
+          background: enVacacion ? "var(--line)" : (covered ? "var(--accent)" : "var(--paper)"),
           border: "1px solid "+(isSel ? "var(--accent)" : "var(--line)"),
-          color: covered ? "#fff" : (laboral ? "var(--ink)" : "var(--muted)")},
-        onClick:()=>{ selectedKey=k; closeOverlays(); render(); }
-      }, el("span",{class:"tabnum",style:{fontSize:"13px",fontWeight:isToday?"700":"400"}}, String(d.getDate())));
+          color: enVacacion ? "var(--muted)" : (covered ? "#fff" : (laboral ? "var(--ink)" : "var(--muted)"))},
+        onClick:()=>{
+          if(modoVacaciones){ toggleVacacion(k); renderGrid(); }
+          else { selectedKey=k; closeOverlays(); render(); }
+        }
+      }, el("span",{class:"tabnum",style:{fontSize:"13px",fontWeight:isToday?"700":"400", textDecoration: enVacacion?"line-through":"none"}}, String(d.getDate())));
       if(isToday){
         cell.appendChild(el("span",{style:{position:"absolute",bottom:"4px",height:"3px",width:"3px",borderRadius:"9999px",
           background: covered ? "#fff" : "var(--accent)"}}));
@@ -1167,11 +1275,13 @@ function openMonthView(mesInicial){
     renderGastos();
   }
 
-  sheet.appendChild(el("div",{style:{display:"flex",gap:"16px",fontSize:"12px",color:"var(--muted)",marginBottom:"18px"}},
+  sheet.appendChild(el("div",{style:{display:"flex",gap:"14px",fontSize:"12px",color:"var(--muted)",marginBottom:"18px",flexWrap:"wrap"}},
     el("span",{style:{display:"flex",alignItems:"center",gap:"6px"}},
       el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--accent)",display:"inline-block"}}), "Con citas"),
     el("span",{style:{display:"flex",alignItems:"center",gap:"6px"}},
-      el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--paper)",border:"1px solid var(--line)",display:"inline-block"}}), "Libre")
+      el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--paper)",border:"1px solid var(--line)",display:"inline-block"}}), "Libre"),
+    el("span",{style:{display:"flex",alignItems:"center",gap:"6px"}},
+      el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--line)",display:"inline-block"}}), "Vacaciones")
   ));
 
   sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"8px"}},
@@ -1234,6 +1344,7 @@ $("#fileInput").addEventListener("change", function(e){
         clientes: p.clientes ? normClientes(p.clientes) : state.clientes,
         gastos: p.gastos ? normGastos(p.gastos) : state.gastos,
         ultimoBackup: typeof p.ultimoBackup==="string" ? p.ultimoBackup : state.ultimoBackup,
+        vacaciones: Array.isArray(p.vacaciones) ? p.vacaciones.filter(x=>typeof x==="string") : state.vacaciones,
       };
       save(); closeOverlays(); render(); toast("Backup restaurado");
     }catch(err){ toast("El archivo no es un backup válido"); }
