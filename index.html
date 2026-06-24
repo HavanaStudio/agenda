@@ -75,12 +75,12 @@ const STORAGE_KEY = "agenda_data";
 const AVISO_KEY = "agenda_aviso_descartado";
 const DIAS_AVISO = 7;
 const SERVICIOS_DEFAULT = [
-  { nombre:"Manicura completa", precio:25 },
-  { nombre:"Pedicura completa", precio:null },
-  { nombre:"Pedicura sencilla", precio:null },
-  { nombre:"Pedicura spa", precio:null },
-  { nombre:"Extensión de uñas", precio:null },
-  { nombre:"Diseños", precio:null },
+  { nombre:"Manicura completa", precio:25, duracion:60 },
+  { nombre:"Pedicura completa", precio:null, duracion:60 },
+  { nombre:"Pedicura sencilla", precio:null, duracion:45 },
+  { nombre:"Pedicura spa", precio:null, duracion:75 },
+  { nombre:"Extensión de uñas", precio:null, duracion:90 },
+  { nombre:"Diseños", precio:null, duracion:15 },
 ];
 const PAGO_LABELS = { efectivo:"Efectivo", tarjeta:"Tarjeta", bizum:"Bizum" };
 
@@ -151,8 +151,9 @@ const normTxt = (s)=> (s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u
 
 function normServicios(arr){
   return (arr||[]).map(s => typeof s==="string"
-    ? { nombre:s, precio:null }
-    : { nombre:s.nombre, precio: typeof s.precio==="number"? s.precio : null });
+    ? { nombre:s, precio:null, duracion:60 }
+    : { nombre:s.nombre, precio: typeof s.precio==="number"? s.precio : null,
+        duracion: (typeof s.duracion==="number" && s.duracion>0) ? s.duracion : 60 });
 }
 function normCitas(citas){
   const out = {};
@@ -210,6 +211,25 @@ function save(){
 
 function precioDe(nombre){ const s=state.servicios.find(x=>x.nombre===nombre); return s && typeof s.precio==="number"? s.precio : 0; }
 function totalCita(c){ return (c.servicios||[]).reduce((t,n)=>t+precioDe(n),0); }
+function duracionDe(nombre){ const s=state.servicios.find(x=>x.nombre===nombre); return (s && typeof s.duracion==="number" && s.duracion>0) ? s.duracion : 60; }
+function duracionCita(c){ return (c.servicios||[]).reduce((t,n)=>t+duracionDe(n),0) || 60; }
+function horaAMinutos(hora){
+  const p = (hora||"00:00").split(":");
+  return (parseInt(p[0],10)||0)*60 + (parseInt(p[1],10)||0);
+}
+function slotsOcupados(dateKey, excluirId){
+  const ocupados = {};
+  (state.citas[dateKey]||[]).forEach(c=>{
+    if(excluirId && c.id===excluirId) return;
+    const inicio = horaAMinutos(c.hora);
+    const fin = inicio + duracionCita(c);
+    HORARIOS_TRABAJO.forEach(h=>{
+      const m = horaAMinutos(h);
+      if(m>=inicio && m<fin) ocupados[h]=true;
+    });
+  });
+  return ocupados;
+}
 function resumenServicios(servicios){
   const conteo = {};
   (servicios||[]).forEach(n=>{ conteo[n] = (conteo[n]||0)+1; });
@@ -283,8 +303,8 @@ function diasDisponibles(viewMonth){
     if(dow===6 && !state.incluirSabado) continue;
     const k = toKey(d);
     if(esVacacion(k)) continue;
-    const ocupadas = (state.citas[k]||[]).map(c=>c.hora);
-    const libres = HORARIOS_TRABAJO.filter(h=>ocupadas.indexOf(h)<0).map(h=>({hora:h, label:formatHora12(h)}));
+    const ocupadas = slotsOcupados(k);
+    const libres = HORARIOS_TRABAJO.filter(h=>!ocupadas[h]).map(h=>({hora:h, label:formatHora12(h)}));
     if(libres.length) out.push({ fecha:d, dateKey:k, libres });
   }
   return out;
@@ -600,17 +620,23 @@ function openCita(dateKey, cita, draft){
   const horaChips = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
   function renderHoraChips(){
     horaChips.innerHTML = "";
+    const ocupados = slotsOcupados(dateKey, cita && cita.id);
     const opciones = HORARIOS_TRABAJO.slice();
     if(horaSel && opciones.indexOf(horaSel)<0) opciones.push(horaSel); // conserva una hora antigua que ya no esté en la lista
     opciones.forEach(h=>{
       const on = horaSel===h;
-      const chip = el("button",{type:"button", class:"chip"+(on?" chip-on":""), onClick:()=>{ horaSel=h; renderHoraChips(); }});
+      const ocupado = !!ocupados[h] && h!==horaSel;
+      const chip = el("button",{type:"button", class:"chip"+(on?" chip-on":""),
+        style: ocupado ? {opacity:".5"} : {},
+        onClick:()=>{ horaSel=h; renderHoraChips(); }});
       if(on) chip.appendChild(icon("check",14));
-      chip.appendChild(document.createTextNode(formatHora12(h)));
+      chip.appendChild(document.createTextNode(formatHora12(h)+(ocupado?" (ocupado)":"")));
       horaChips.appendChild(chip);
     });
   }
   renderHoraChips();
+  const horaHint = el("p",{style:{fontSize:"11px",margin:"-4px 0 0",color:"var(--muted)"}},
+    "Si una clienta tiene varios servicios largos, puede tapar el siguiente horario.");
   const clientaInput = el("input",{class:"field",placeholder:"Nombre de la clienta"});
   clientaInput.value = initial.clienta || "";
   const phoneInput = el("input",{class:"field",type:"tel",placeholder:"Ej. 612 345 678"});
@@ -741,7 +767,7 @@ function openCita(dateKey, cita, draft){
   phoneInput.addEventListener("input", renderPhoneActions);
 
   const body = el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}},
-    el("div",{}, el("label",{class:"label"},"Hora"), horaChips),
+    el("div",{}, el("label",{class:"label"},"Hora"), horaChips, horaHint),
     el("div",{}, el("label",{class:"label"},"Clienta"), clientaInput, accionesClienta),
     el("div",{}, el("label",{class:"label"},"Teléfono (opcional)"), phoneInput, phoneActions),
     el("div",{}, el("label",{class:"label"},"Servicios (puedes elegir varios)"), chips, totalLine),
@@ -826,21 +852,27 @@ function openSettings(){
     el("span",{style:{fontSize:"14px"}},"Mostrar sábados"), sw));
 
   // servicios
-  sheet.appendChild(el("p",{style:{fontSize:"12px",fontWeight:"500",margin:"0 0 8px",color:"var(--muted)"}},"Mis servicios y precios"));
+  sheet.appendChild(el("p",{style:{fontSize:"12px",fontWeight:"500",margin:"0 0 8px",color:"var(--muted)"}},"Mis servicios, precios y duración"));
+  sheet.appendChild(el("p",{style:{fontSize:"11px",lineHeight:"1.4",margin:"0 0 10px",color:"var(--muted)"}},
+    "La duración sirve para que la app sepa cuánto ocupa cada servicio y no te muestre como libre un horario que en realidad ya está cubierto por una cita larga."));
   const nombreInput = el("input",{class:"field",placeholder:"Servicio…",style:{flex:"1",minWidth:"0",fontSize:"14px"}});
-  const precioInput = el("input",{class:"field",inputmode:"decimal",placeholder:"€",style:{width:"60px",textAlign:"center",fontSize:"14px"}});
+  const precioInput = el("input",{class:"field",inputmode:"decimal",placeholder:"€",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
+  const duracionInput = el("input",{class:"field",inputmode:"numeric",placeholder:"min",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
   function añadir(){
     const n = nombreInput.value.trim();
-    if(!n || state.servicios.some(s=>s.nombre===n)){ nombreInput.value=""; precioInput.value=""; return; }
+    if(!n || state.servicios.some(s=>s.nombre===n)){ nombreInput.value=""; precioInput.value=""; duracionInput.value=""; return; }
     const pv = precioInput.value.trim().replace(",",".");
     const p = pv==="" ? null : Number(pv);
-    state.servicios = state.servicios.concat([{ nombre:n, precio: Number.isFinite(p)?p:null }]);
+    const dv = parseInt(duracionInput.value,10);
+    const d = Number.isFinite(dv) && dv>0 ? dv : 60;
+    state.servicios = state.servicios.concat([{ nombre:n, precio: Number.isFinite(p)?p:null, duracion:d }]);
     save(); render(); openSettings();
   }
   nombreInput.addEventListener("keydown",e=>{ if(e.key==="Enter") añadir(); });
   precioInput.addEventListener("keydown",e=>{ if(e.key==="Enter") añadir(); });
+  duracionInput.addEventListener("keydown",e=>{ if(e.key==="Enter") añadir(); });
   sheet.appendChild(el("div",{style:{display:"flex",gap:"8px",marginBottom:"12px"}},
-    nombreInput, precioInput,
+    nombreInput, precioInput, duracionInput,
     el("button",{class:"primary","aria-label":"Añadir servicio",style:{height:"44px",width:"44px",display:"grid",placeItems:"center",flexShrink:"0"},
       onClick:añadir}, icon("plus",18))
   ));
@@ -848,17 +880,27 @@ function openSettings(){
   const servList = el("div",{style:{display:"flex",flexDirection:"column",gap:"6px",maxHeight:"240px",overflowY:"auto"}});
   state.servicios.forEach(s=>{
     const pInput = el("input",{class:"tabnum",inputmode:"decimal",placeholder:"—",
-      style:{width:"56px",textAlign:"center",borderRadius:"8px",padding:"6px 8px",fontSize:"14px",background:"var(--bg)",border:"1px solid var(--line)",color:"var(--ink)"}});
+      style:{width:"50px",textAlign:"center",borderRadius:"8px",padding:"6px 6px",fontSize:"14px",background:"var(--bg)",border:"1px solid var(--line)",color:"var(--ink)"}});
     pInput.value = (typeof s.precio==="number") ? s.precio : "";
     pInput.addEventListener("change",()=>{
       const v = pInput.value.trim().replace(",",".");
       const np = v==="" ? null : Number(v);
-      state.servicios = state.servicios.map(x=> x.nombre===s.nombre ? {nombre:x.nombre, precio: Number.isFinite(np)?np:null} : x);
+      state.servicios = state.servicios.map(x=> x.nombre===s.nombre ? Object.assign({},x,{precio: Number.isFinite(np)?np:null}) : x);
       save(); render();
     });
-    const row = el("div",{style:{display:"flex",alignItems:"center",gap:"8px",background:"#fff",border:"1px solid var(--line)",borderRadius:"12px",padding:"8px 14px"}},
+    const dInput = el("input",{class:"tabnum",inputmode:"numeric",placeholder:"60",
+      style:{width:"46px",textAlign:"center",borderRadius:"8px",padding:"6px 6px",fontSize:"14px",background:"var(--bg)",border:"1px solid var(--line)",color:"var(--ink)"}});
+    dInput.value = (typeof s.duracion==="number") ? s.duracion : 60;
+    dInput.addEventListener("change",()=>{
+      const nv = parseInt(dInput.value,10);
+      const nd = Number.isFinite(nv) && nv>0 ? nv : 60;
+      state.servicios = state.servicios.map(x=> x.nombre===s.nombre ? Object.assign({},x,{duracion:nd}) : x);
+      save(); render();
+    });
+    const row = el("div",{style:{display:"flex",alignItems:"center",gap:"6px",background:"#fff",border:"1px solid var(--line)",borderRadius:"12px",padding:"8px 12px"}},
       el("span",{class:"truncate",style:{flex:"1",minWidth:"0",fontSize:"14px"}}, s.nombre),
-      el("div",{style:{display:"flex",alignItems:"center",gap:"4px"}}, pInput, el("span",{style:{fontSize:"14px",color:"var(--muted)"}},"€")),
+      el("div",{style:{display:"flex",alignItems:"center",gap:"3px"}}, pInput, el("span",{style:{fontSize:"12px",color:"var(--muted)"}},"€")),
+      el("div",{style:{display:"flex",alignItems:"center",gap:"3px"}}, dInput, el("span",{style:{fontSize:"12px",color:"var(--muted)"}},"min")),
       el("button",{"aria-label":"Eliminar "+s.nombre,style:{padding:"4px",color:"var(--muted)"},
         onClick:()=>{ state.servicios = state.servicios.filter(x=>x.nombre!==s.nombre); save(); render(); openSettings(); }}, icon("x",16))
     );
