@@ -88,6 +88,7 @@ const PATHS = {
   "plus":'<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
   "x":'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   "search":'<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  "calendar":'<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
   "settings":'<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
   "trash":'<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   "pencil":'<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
@@ -139,6 +140,7 @@ const fmtMes = (d)=>new Intl.DateTimeFormat("es-ES",{month:"long",year:"numeric"
 const fmtDiaLargo = (d)=>new Intl.DateTimeFormat("es-ES",{weekday:"long",day:"numeric",month:"long"}).format(d);
 const cap = (s)=> s ? s.charAt(0).toUpperCase()+s.slice(1) : s;
 const eur = (n)=> (Number.isInteger(n)? n : n.toFixed(2)) + " €";
+const normTxt = (s)=> (s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
 
 function normServicios(arr){
   return (arr||[]).map(s => typeof s==="string"
@@ -183,6 +185,18 @@ function save(){
 function precioDe(nombre){ const s=state.servicios.find(x=>x.nombre===nombre); return s && typeof s.precio==="number"? s.precio : 0; }
 function totalCita(c){ return (c.servicios||[]).reduce((t,n)=>t+precioDe(n),0); }
 
+function clientasRecientes(){
+  const seen = new Map();
+  Object.keys(state.citas).sort().forEach(k=>{
+    state.citas[k].forEach(c=>{
+      if(!c.clienta) return;
+      if(seen.has(c.clienta)) seen.delete(c.clienta);
+      seen.set(c.clienta, k);
+    });
+  });
+  return Array.from(seen.keys()).reverse();
+}
+
 /* ============ toast ============ */
 let toastTimer=null;
 function toast(msg){
@@ -210,6 +224,7 @@ function buildMain(){
     el("p",{style:{fontSize:"12px",margin:"4px 0 0",color:"var(--muted)"}},"Copia de seguridad de tus citas")
   );
   const headBtns = el("div",{style:{display:"flex",gap:"8px"}},
+    el("button",{class:"ico","aria-label":"Calendario", onClick:openMonthView}, icon("calendar",17)),
     el("button",{class:"ico","aria-label":"Buscar", onClick:openSearch}, icon("search",17)),
     el("button",{class:"ico","aria-label":"Ajustes", onClick:openSettings}, icon("settings",17))
   );
@@ -363,14 +378,35 @@ function openCita(dateKey, cita){
 
   const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
 
+  const suggBox = el("div",{style:{display:"none",flexDirection:"column",gap:"4px",marginTop:"6px"}});
+  function renderSugerencias(){
+    const q = normTxt(clientaInput.value.trim());
+    const todas = clientasRecientes();
+    const filtradas = q
+      ? todas.filter(n=> normTxt(n).indexOf(q)>=0 && normTxt(n)!==q)
+      : todas.slice(0,5);
+    suggBox.innerHTML = "";
+    if(filtradas.length===0){ suggBox.style.display="none"; return; }
+    suggBox.style.display = "flex";
+    filtradas.slice(0,5).forEach(n=>{
+      suggBox.appendChild(el("button",{type:"button",
+        style:{textAlign:"left",padding:"8px 12px",borderRadius:"10px",fontSize:"14px",
+          background:"#fff",border:"1px solid var(--line)",color:"var(--ink)"},
+        onClick:()=>{ clientaInput.value=n; suggBox.style.display="none"; suggBox.innerHTML=""; }
+      }, n));
+    });
+  }
+  clientaInput.addEventListener("focus", renderSugerencias);
+  clientaInput.addEventListener("input", ()=>{ err.textContent=""; renderSugerencias(); });
+  clientaInput.addEventListener("blur", ()=>{ setTimeout(()=>{ suggBox.style.display="none"; }, 150); });
+
   const body = el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}},
     el("div",{}, el("label",{class:"label"},"Hora"), horaInput),
-    el("div",{}, el("label",{class:"label"},"Clienta"), clientaInput),
+    el("div",{}, el("label",{class:"label"},"Clienta"), clientaInput, suggBox),
     el("div",{}, el("label",{class:"label"},"Servicios (puedes elegir varios)"), chips, totalLine),
     el("div",{}, el("label",{class:"label"},"Notas (opcional)"), notasInput),
     err
   );
-  clientaInput.addEventListener("input", ()=>{ err.textContent=""; });
   sheet.appendChild(body);
 
   function guardar(){
@@ -525,6 +561,86 @@ function openSearch(){
   sheet.appendChild(results);
   document.body.appendChild(overlay);
   setTimeout(()=>input.focus(), 50);
+}
+
+/* ============ modal calendario mensual ============ */
+function openMonthView(){
+  closeOverlays();
+  const base = fromKey(selectedKey);
+  let viewMonth = new Date(base.getFullYear(), base.getMonth(), 1);
+  const { overlay, sheet } = buildSheet();
+  const todayKey = toKey(new Date());
+
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}},"Calendario"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:closeOverlays}, icon("x",20))
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 14px",color:"var(--muted)"}},"Días con citas y días libres, de un vistazo."));
+
+  const nav = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"10px"}});
+  const monthLabel = el("p",{class:"serif",style:{fontSize:"16px",margin:"0"}});
+  nav.appendChild(el("button",{class:"ico","aria-label":"Mes anterior",
+    onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()-1,1); renderGrid(); }}, icon("chevron-left",18)));
+  nav.appendChild(monthLabel);
+  nav.appendChild(el("button",{class:"ico","aria-label":"Mes siguiente",
+    onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()+1,1); renderGrid(); }}, icon("chevron-right",18)));
+  sheet.appendChild(nav);
+
+  const headersRow = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:"6px"}});
+  ["L","M","X","J","V","S","D"].forEach(d=>{
+    headersRow.appendChild(el("span",{style:{textAlign:"center",fontSize:"10px",fontWeight:"500",letterSpacing:".5px",textTransform:"uppercase",color:"var(--muted)"}}, d));
+  });
+  sheet.appendChild(headersRow);
+
+  const cellsWrap = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"5px",marginBottom:"14px"}});
+  sheet.appendChild(cellsWrap);
+
+  function esLaboral(d){
+    const day = d.getDay(); // 0=domingo
+    if(day===0) return false;
+    if(day===6) return state.incluirSabado;
+    return true;
+  }
+
+  function renderGrid(){
+    monthLabel.textContent = cap(fmtMes(viewMonth));
+    cellsWrap.innerHTML = "";
+    const gridStart = startOfWeek(viewMonth);
+    for(let i=0;i<42;i++){
+      const d = addDays(gridStart,i);
+      const inMonth = d.getMonth()===viewMonth.getMonth();
+      const k = toKey(d);
+      const count = (state.citas[k]||[]).length;
+      const laboral = esLaboral(d);
+      const isToday = k===todayKey;
+      const isSel = k===selectedKey;
+      const covered = laboral && count>0;
+      const cell = el("button",{
+        style:{position:"relative",aspectRatio:"1",borderRadius:"10px",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          opacity: inMonth ? "1" : ".3",
+          background: covered ? "var(--accent)" : "var(--paper)",
+          border: "1px solid "+(isSel ? "var(--accent)" : "var(--line)"),
+          color: covered ? "#fff" : (laboral ? "var(--ink)" : "var(--muted)")},
+        onClick:()=>{ selectedKey=k; closeOverlays(); render(); }
+      }, el("span",{class:"tabnum",style:{fontSize:"13px",fontWeight:isToday?"700":"400"}}, String(d.getDate())));
+      if(isToday){
+        cell.appendChild(el("span",{style:{position:"absolute",bottom:"4px",height:"3px",width:"3px",borderRadius:"9999px",
+          background: covered ? "#fff" : "var(--accent)"}}));
+      }
+      cellsWrap.appendChild(cell);
+    }
+  }
+  renderGrid();
+
+  sheet.appendChild(el("div",{style:{display:"flex",gap:"16px",fontSize:"12px",color:"var(--muted)"}},
+    el("span",{style:{display:"flex",alignItems:"center",gap:"6px"}},
+      el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--accent)",display:"inline-block"}}), "Con citas"),
+    el("span",{style:{display:"flex",alignItems:"center",gap:"6px"}},
+      el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--paper)",border:"1px solid var(--line)",display:"inline-block"}}), "Libre")
+  ));
+
+  document.body.appendChild(overlay);
 }
 
 /* ============ backup ============ */
