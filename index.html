@@ -72,6 +72,8 @@
 
 /* ============ datos ============ */
 const STORAGE_KEY = "agenda_data";
+const AVISO_KEY = "agenda_aviso_descartado";
+const DIAS_AVISO = 7;
 const SERVICIOS_DEFAULT = [
   { nombre:"Manicura completa", precio:25 },
   { nombre:"Pedicura completa", precio:null },
@@ -80,6 +82,7 @@ const SERVICIOS_DEFAULT = [
   { nombre:"Extensión de uñas", precio:null },
   { nombre:"Diseños", precio:null },
 ];
+const PAGO_LABELS = { efectivo:"Efectivo", tarjeta:"Tarjeta", bizum:"Bizum" };
 
 /* ============ iconos ============ */
 const PATHS = {
@@ -89,6 +92,9 @@ const PATHS = {
   "x":'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   "search":'<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
   "calendar":'<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+  "phone":'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
+  "message-circle":'<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
+  "users":'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   "settings":'<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
   "trash":'<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   "pencil":'<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
@@ -138,6 +144,7 @@ function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; 
 const DIAS_CORTO = ["L","M","X","J","V","S"];
 const fmtMes = (d)=>new Intl.DateTimeFormat("es-ES",{month:"long",year:"numeric"}).format(d);
 const fmtDiaLargo = (d)=>new Intl.DateTimeFormat("es-ES",{weekday:"long",day:"numeric",month:"long"}).format(d);
+const fmtDiaCorto = (d)=>new Intl.DateTimeFormat("es-ES",{day:"numeric",month:"short"}).format(d);
 const cap = (s)=> s ? s.charAt(0).toUpperCase()+s.slice(1) : s;
 const eur = (n)=> (Number.isInteger(n)? n : n.toFixed(2)) + " €";
 const normTxt = (s)=> (s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
@@ -153,14 +160,28 @@ function normCitas(citas){
     out[k] = (citas[k]||[]).map(c=>{
       let servicios = c.servicios;
       if(!Array.isArray(servicios)) servicios = c.servicio ? [c.servicio] : [];
-      return { id:c.id, hora:c.hora||"", clienta:c.clienta||"", servicios:servicios, notas:c.notas||"" };
+      return { id:c.id, hora:c.hora||"", clienta:c.clienta||"", servicios:servicios, notas:c.notas||"", pago: c.pago||null };
     });
   }
   return out;
 }
+function normClientes(clientes){
+  const out = {};
+  for(const k in (clientes||{})){
+    if(typeof clientes[k]==="string" && clientes[k].trim()) out[k]=clientes[k].trim();
+  }
+  return out;
+}
+function normGastos(gastos){
+  if(!Array.isArray(gastos)) return [];
+  return gastos.filter(g=>g && g.fecha && typeof g.importe==="number").map(g=>({
+    id: g.id || (Date.now()+"-"+Math.random().toString(36).slice(2,7)),
+    fecha: g.fecha, concepto: g.concepto||"", importe: g.importe
+  }));
+}
 
 /* ============ estado ============ */
-let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true };
+let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true, clientes:{}, gastos:[], ultimoBackup:null };
 let selectedKey = toKey(new Date());
 
 function load(){
@@ -173,6 +194,9 @@ function load(){
         citas: normCitas(p.citas),
         servicios: s.length ? s : SERVICIOS_DEFAULT,
         incluirSabado: typeof p.incluirSabado==="boolean" ? p.incluirSabado : true,
+        clientes: normClientes(p.clientes),
+        gastos: normGastos(p.gastos),
+        ultimoBackup: typeof p.ultimoBackup==="string" ? p.ultimoBackup : null,
       };
     }
   }catch(e){}
@@ -184,17 +208,174 @@ function save(){
 
 function precioDe(nombre){ const s=state.servicios.find(x=>x.nombre===nombre); return s && typeof s.precio==="number"? s.precio : 0; }
 function totalCita(c){ return (c.servicios||[]).reduce((t,n)=>t+precioDe(n),0); }
-
-function clientasRecientes(){
-  const seen = new Map();
-  Object.keys(state.citas).sort().forEach(k=>{
-    state.citas[k].forEach(c=>{
-      if(!c.clienta) return;
-      if(seen.has(c.clienta)) seen.delete(c.clienta);
-      seen.set(c.clienta, k);
-    });
+function totalMes(refDate, metodo){
+  let total = 0;
+  for(const k in state.citas){
+    const d = fromKey(k);
+    if(d.getFullYear()===refDate.getFullYear() && d.getMonth()===refDate.getMonth()){
+      state.citas[k].forEach(c=>{
+        if(!c.pago) return; // no cobrado todavía: no cuenta
+        if(metodo && c.pago!==metodo) return;
+        total += totalCita(c);
+      });
+    }
+  }
+  return total;
+}
+function gastosDelMes(refDate){
+  return state.gastos.filter(g=>{
+    const d = fromKey(g.fecha);
+    return d.getFullYear()===refDate.getFullYear() && d.getMonth()===refDate.getMonth();
   });
-  return Array.from(seen.keys()).reverse();
+}
+function totalGastosMes(refDate){
+  return gastosDelMes(refDate).reduce((t,g)=>t+(g.importe||0),0);
+}
+function diasDesdeBackup(){
+  if(!state.ultimoBackup) return Infinity;
+  const ms = Date.now() - new Date(state.ultimoBackup).getTime();
+  return Math.floor(ms / 86400000);
+}
+
+const FRANJAS_DISPONIBILIDAD = [
+  {hora:"09:00", label:"9:00 am"},
+  {hora:"11:30", label:"11:30 am"},
+  {hora:"14:00", label:"2:00 pm"},
+  {hora:"16:00", label:"4:00 pm"},
+  {hora:"18:30", label:"6:30 pm"},
+];
+function diasDisponibles(viewMonth){
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const year = viewMonth.getFullYear(), month = viewMonth.getMonth();
+  const ultimoDia = new Date(year, month+1, 0).getDate();
+  const out = [];
+  for(let day=1; day<=ultimoDia; day++){
+    const d = new Date(year, month, day);
+    if(d < hoy) continue;
+    const dow = d.getDay();
+    if(dow===0) continue;
+    if(dow===6 && !state.incluirSabado) continue;
+    const k = toKey(d);
+    const ocupadas = (state.citas[k]||[]).map(c=>c.hora);
+    const libres = FRANJAS_DISPONIBILIDAD.filter(f=>ocupadas.indexOf(f.hora)<0);
+    if(libres.length) out.push({ fecha:d, dateKey:k, libres });
+  }
+  return out;
+}
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+async function generarImagenDisponibilidad(viewMonth, dias){
+  if(document.fonts && document.fonts.ready){ try{ await document.fonts.ready; }catch(e){} }
+
+  const W = 720, PAD = 56;
+  const COL = { bg:"#F3EEE9", ink:"#2B2622", muted:"#8A817A", accent:"#9C6B5E", accentSoft:"#EFE4DF", line:"#E5DBD3" };
+  const F_TITULO = "600 32px Fraunces, Georgia, serif";
+  const F_SUB = "500 17px Inter, system-ui, sans-serif";
+  const F_FECHA = "600 16px Inter, system-ui, sans-serif";
+  const F_CHIP = "600 14px Inter, system-ui, sans-serif";
+  const F_VACIO = "400 15px Inter, system-ui, sans-serif";
+  const F_FOOT = "italic 12px Inter, system-ui, sans-serif";
+
+  const tmp = document.createElement("canvas").getContext("2d");
+
+  const bloques = [];
+  let y = PAD + 78; // título + subtítulo + línea
+
+  if(dias.length===0){
+    bloques.push({ tipo:"vacio", y });
+    y += 30;
+  }
+
+  dias.forEach(d=>{
+    bloques.push({ tipo:"fecha", y, texto: cap(fmtDiaLargo(d.fecha)) });
+    y += 24;
+    tmp.font = F_CHIP;
+    const chipH=34, gap=10, padX=16;
+    let x=0, rowY=y, filas=[[]];
+    d.libres.forEach(f=>{
+      const w = tmp.measureText(f.label).width + padX*2;
+      if(x+w > W-PAD*2 && filas[filas.length-1].length>0){ filas.push([]); x=0; rowY+=chipH+gap; }
+      filas[filas.length-1].push({label:f.label, w});
+      x += w+gap;
+    });
+    bloques.push({ tipo:"chips", filas, startY:y, chipH, gap, padX });
+    const altoChips = filas.length*(chipH+gap)-gap;
+    y += altoChips + 22;
+  });
+
+  bloques.push({ tipo:"footer", y });
+  y += 26;
+  const H = y + PAD - 10;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = COL.bg; ctx.fillRect(0,0,W,H);
+  ctx.textBaseline = "alphabetic";
+
+  ctx.fillStyle = COL.ink;
+  ctx.font = F_TITULO;
+  ctx.fillText("Disponibilidad", PAD, PAD+32);
+
+  ctx.fillStyle = COL.accent;
+  ctx.font = F_SUB;
+  ctx.fillText(cap(fmtMes(viewMonth)), PAD, PAD+60);
+
+  ctx.strokeStyle = COL.line; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD, PAD+78); ctx.lineTo(W-PAD, PAD+78); ctx.stroke();
+
+  bloques.forEach(b=>{
+    if(b.tipo==="vacio"){
+      ctx.fillStyle = COL.muted; ctx.font = F_VACIO;
+      ctx.fillText("No quedan horarios libres este mes.", PAD, b.y+12);
+    } else if(b.tipo==="fecha"){
+      ctx.fillStyle = COL.ink; ctx.font = F_FECHA;
+      ctx.fillText(b.texto, PAD, b.y+12);
+    } else if(b.tipo==="chips"){
+      ctx.font = F_CHIP;
+      let rowY = b.startY;
+      b.filas.forEach(fila=>{
+        let x = PAD;
+        fila.forEach(c=>{
+          ctx.fillStyle = COL.accentSoft;
+          roundRect(ctx, x, rowY, c.w, b.chipH, b.chipH/2); ctx.fill();
+          ctx.fillStyle = COL.accent;
+          ctx.fillText(c.label, x+b.padX, rowY+b.chipH/2+5);
+          x += c.w + b.gap;
+        });
+        rowY += b.chipH + b.gap;
+      });
+    } else if(b.tipo==="footer"){
+      ctx.strokeStyle = COL.line;
+      ctx.beginPath(); ctx.moveTo(PAD, b.y); ctx.lineTo(W-PAD, b.y); ctx.stroke();
+      ctx.fillStyle = COL.muted; ctx.font = F_FOOT;
+      const ahora = new Date();
+      ctx.fillText("Actualizado el "+toKey(ahora)+" · "+pad(ahora.getHours())+":"+pad(ahora.getMinutes())+" h", PAD, b.y+22);
+    }
+  });
+
+  return canvas;
+}
+
+function contactsSupported(){
+  return typeof navigator!=="undefined" && "contacts" in navigator && typeof window.ContactsManager!=="undefined";
+}
+async function pickContact(){
+  try{
+    const contacts = await navigator.contacts.select(["name","tel"], {multiple:false});
+    if(!contacts || !contacts.length) return null;
+    const c = contacts[0];
+    const nombre = (c.name && c.name[0]) ? c.name[0] : "";
+    const tel = (c.tel && c.tel[0]) ? c.tel[0] : "";
+    return { nombre, tel };
+  }catch(e){ return null; }
 }
 
 /* ============ toast ============ */
@@ -214,6 +395,26 @@ function render(){
   app.appendChild(buildMain());
 }
 
+function buildAvisoBackup(){
+  const dias = diasDesdeBackup();
+  if(dias < DIAS_AVISO) return null;
+  const hoyKey = toKey(new Date());
+  if(localStorage.getItem(AVISO_KEY)===hoyKey) return null;
+
+  const mensaje = state.ultimoBackup
+    ? "Hace "+dias+" días que no haces copia de seguridad."
+    : "Todavía no has hecho ninguna copia de seguridad.";
+
+  return el("div",{class:"card",style:{display:"flex",alignItems:"center",gap:"10px",padding:"12px 14px",
+      marginBottom:"14px",background:"#FBF3E7"}},
+    el("span",{style:{color:"var(--accent)",flexShrink:"0"}}, icon("download",18)),
+    el("span",{style:{flex:"1",fontSize:"13px",lineHeight:"1.3"}}, mensaje),
+    el("button",{class:"chip",style:{flexShrink:"0"}, onClick:exportar}, "Exportar"),
+    el("button",{"aria-label":"Cerrar aviso",style:{color:"var(--muted)",flexShrink:"0",padding:"2px"},
+      onClick:()=>{ localStorage.setItem(AVISO_KEY, hoyKey); render(); }}, icon("x",16))
+  );
+}
+
 function buildMain(){
   const wrap = el("div",{class:"wrap"});
 
@@ -224,12 +425,16 @@ function buildMain(){
     el("p",{style:{fontSize:"12px",margin:"4px 0 0",color:"var(--muted)"}},"Copia de seguridad de tus citas")
   );
   const headBtns = el("div",{style:{display:"flex",gap:"8px"}},
-    el("button",{class:"ico","aria-label":"Calendario", onClick:openMonthView}, icon("calendar",17)),
+    el("button",{class:"ico","aria-label":"Clientas", onClick:()=>openClientesView()}, icon("users",17)),
+    el("button",{class:"ico","aria-label":"Calendario", onClick:()=>openMonthView()}, icon("calendar",17)),
     el("button",{class:"ico","aria-label":"Buscar", onClick:openSearch}, icon("search",17)),
     el("button",{class:"ico","aria-label":"Ajustes", onClick:openSettings}, icon("settings",17))
   );
   header.appendChild(titleBox); header.appendChild(headBtns);
   wrap.appendChild(header);
+
+  const aviso = buildAvisoBackup();
+  if(aviso) wrap.appendChild(aviso);
 
   const selDate = fromKey(selectedKey);
   const wkStart = startOfWeek(selDate);
@@ -282,11 +487,11 @@ function buildMain(){
 
   // encabezado del día + total
   const citas = (state.citas[selectedKey]||[]).slice().sort((a,b)=>(a.hora||"").localeCompare(b.hora||""));
-  const totalDia = citas.reduce((t,c)=>t+totalCita(c),0);
+  const totalDia = citas.reduce((t,c)=> c.pago ? t+totalCita(c) : t, 0);
   const dayHead = el("div",{style:{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:"12px"}});
   dayHead.appendChild(el("h2",{class:"serif",style:{fontSize:"20px",margin:"0"}}, cap(fmtDiaLargo(selDate))));
   const rightInfo = el("div",{style:{textAlign:"right",fontSize:"12px",color:"var(--muted)"}}, citas.length+" "+(citas.length===1?"cita":"citas"));
-  if(totalDia>0) rightInfo.appendChild(el("span",{style:{display:"block",fontWeight:"600",color:"var(--accent)"}}, eur(totalDia)));
+  if(totalDia>0) rightInfo.appendChild(el("span",{style:{display:"block",fontWeight:"600",color:"var(--accent)"}}, "Cobrado: "+eur(totalDia)));
   dayHead.appendChild(rightInfo);
   wrap.appendChild(dayHead);
 
@@ -309,6 +514,11 @@ function buildMain(){
         el("span",{class:"truncate",style:{display:"block",fontSize:"14px",color:"var(--muted)"}}, (c.servicios||[]).join(" + ")||"Sin servicio")
       );
       if(c.notas) mid.appendChild(el("span",{class:"truncate",style:{display:"block",fontSize:"12px",marginTop:"2px",color:"var(--muted)"}}, c.notas));
+      const pagoOn = !!c.pago;
+      mid.appendChild(el("span",{style:{display:"inline-block",marginTop:"5px",fontSize:"11px",fontWeight:"500",padding:"2px 9px",borderRadius:"9999px",
+        background: pagoOn ? "var(--accentSoft)" : "transparent",
+        border: pagoOn ? "none" : "1px dashed var(--line)",
+        color: pagoOn ? "var(--accent)" : "var(--muted)"}}, pagoOn ? PAGO_LABELS[c.pago] : "Por cobrar"));
       card.appendChild(mid);
       const right = el("span",{style:{display:"flex",flexDirection:"column",alignItems:"flex-end",paddingTop:"2px"}});
       if(precio>0) right.appendChild(el("span",{class:"tabnum",style:{fontSize:"14px",fontWeight:"600"}}, eur(precio)));
@@ -336,9 +546,10 @@ function buildSheet(){
 }
 
 /* ============ modal cita ============ */
-function openCita(dateKey, cita){
+function openCita(dateKey, cita, draft){
   closeOverlays();
-  let sel = cita ? (cita.servicios||[]).slice() : [];
+  const initial = draft || cita || {};
+  let sel = (initial.servicios||[]).slice();
   const { overlay, sheet } = buildSheet();
 
   const head = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"2px"}},
@@ -349,11 +560,13 @@ function openCita(dateKey, cita){
   sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 16px",color:"var(--muted)"}}, cap(fmtDiaLargo(fromKey(dateKey)))));
 
   const horaInput = el("input",{class:"field",type:"time"});
-  horaInput.value = cita ? (cita.hora||"10:00") : "10:00";
+  horaInput.value = initial.hora || "10:00";
   const clientaInput = el("input",{class:"field",placeholder:"Nombre de la clienta"});
-  clientaInput.value = cita ? (cita.clienta||"") : "";
+  clientaInput.value = initial.clienta || "";
+  const phoneInput = el("input",{class:"field",type:"tel",placeholder:"Ej. 612 345 678"});
+  phoneInput.value = draft ? (draft.telefono||"") : (cita ? (state.clientes[cita.clienta]||"") : "");
   const notasInput = el("textarea",{class:"field",rows:"2",placeholder:"Color, detalles…"});
-  notasInput.value = cita ? (cita.notas||"") : "";
+  notasInput.value = initial.notas || "";
 
   const chips = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
   const totalLine = el("p",{style:{fontSize:"14px",margin:"8px 0 0",fontWeight:"600",color:"var(--accent)"}});
@@ -376,34 +589,75 @@ function openCita(dateKey, cita){
   }
   renderChips();
 
-  const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
-
-  const suggBox = el("div",{style:{display:"none",flexDirection:"column",gap:"4px",marginTop:"6px"}});
-  function renderSugerencias(){
-    const q = normTxt(clientaInput.value.trim());
-    const todas = clientasRecientes();
-    const filtradas = q
-      ? todas.filter(n=> normTxt(n).indexOf(q)>=0 && normTxt(n)!==q)
-      : todas.slice(0,5);
-    suggBox.innerHTML = "";
-    if(filtradas.length===0){ suggBox.style.display="none"; return; }
-    suggBox.style.display = "flex";
-    filtradas.slice(0,5).forEach(n=>{
-      suggBox.appendChild(el("button",{type:"button",
-        style:{textAlign:"left",padding:"8px 12px",borderRadius:"10px",fontSize:"14px",
-          background:"#fff",border:"1px solid var(--line)",color:"var(--ink)"},
-        onClick:()=>{ clientaInput.value=n; suggBox.style.display="none"; suggBox.innerHTML=""; }
-      }, n));
+  let pagoSel = initial.pago || "";
+  const PAGO_OPCIONES = [["","Pendiente"],["efectivo","Efectivo"],["tarjeta","Tarjeta"],["bizum","Bizum"]];
+  const pagoChips = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
+  function renderPagoChips(){
+    pagoChips.innerHTML="";
+    PAGO_OPCIONES.forEach(([val,label])=>{
+      const on = pagoSel===val;
+      const chip = el("button",{class:"chip"+(on?" chip-on":""), onClick:()=>{ pagoSel=val; renderPagoChips(); }});
+      if(on) chip.appendChild(icon("check",14));
+      chip.appendChild(document.createTextNode(label));
+      pagoChips.appendChild(chip);
     });
   }
-  clientaInput.addEventListener("focus", renderSugerencias);
-  clientaInput.addEventListener("input", ()=>{ err.textContent=""; renderSugerencias(); });
-  clientaInput.addEventListener("blur", ()=>{ setTimeout(()=>{ suggBox.style.display="none"; }, 150); });
+  renderPagoChips();
+
+  const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
+
+  const pillBtnStyle = {display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"13px",padding:"7px 14px",
+    borderRadius:"9999px",background:"var(--paper)",border:"1px solid var(--line)",color:"var(--ink)"};
+  const accionesClienta = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px",marginTop:"8px"}});
+  if(contactsSupported()){
+    accionesClienta.appendChild(el("button",{type:"button", style:pillBtnStyle,
+      onClick: async ()=>{
+        const picked = await pickContact();
+        if(picked){
+          if(picked.nombre) clientaInput.value = picked.nombre;
+          if(picked.tel) phoneInput.value = picked.tel;
+          err.textContent=""; renderPhoneActions();
+        } else toast("No se pudo importar el contacto");
+      }
+    }, icon("upload",14), "Importar de contactos"));
+  }
+  accionesClienta.appendChild(el("button",{type:"button", style:pillBtnStyle,
+    onClick:()=>{
+      const snapshot = { hora:horaInput.value, clienta:clientaInput.value, telefono:phoneInput.value,
+        servicios:sel.slice(), notas:notasInput.value, pago:pagoSel };
+      openClientesView({
+        onSelect:(nombre, tel)=>{ snapshot.clienta=nombre; snapshot.telefono=tel||""; openCita(dateKey, cita, snapshot); },
+        onCancel:()=> openCita(dateKey, cita, snapshot)
+      });
+    }
+  }, icon("users",14), "Elegir clienta guardada"));
+
+  clientaInput.addEventListener("input", ()=>{ err.textContent=""; });
+  clientaInput.addEventListener("blur", ()=>{
+    const n = clientaInput.value.trim();
+    if(n && state.clientes[n] && !phoneInput.value.trim()){ phoneInput.value = state.clientes[n]; renderPhoneActions(); }
+  });
+
+  const phoneActions = el("div",{style:{display:"flex",gap:"8px",marginTop:"8px"}});
+  function renderPhoneActions(){
+    phoneActions.innerHTML = "";
+    const digits = (phoneInput.value||"").replace(/\D/g,"");
+    if(!digits) return;
+    const intl = digits.length===9 ? "34"+digits : digits;
+    const pillStyle = {display:"flex",alignItems:"center",gap:"6px",fontSize:"13px",padding:"7px 14px",
+      borderRadius:"9999px",background:"var(--paper)",border:"1px solid var(--line)",color:"var(--ink)",textDecoration:"none"};
+    phoneActions.appendChild(el("a",{href:"tel:"+digits, style:pillStyle}, icon("phone",14), "Llamar"));
+    phoneActions.appendChild(el("a",{href:"https://wa.me/"+intl, target:"_blank", rel:"noopener", style:pillStyle}, icon("message-circle",14), "WhatsApp"));
+  }
+  renderPhoneActions();
+  phoneInput.addEventListener("input", renderPhoneActions);
 
   const body = el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}},
     el("div",{}, el("label",{class:"label"},"Hora"), horaInput),
-    el("div",{}, el("label",{class:"label"},"Clienta"), clientaInput, suggBox),
+    el("div",{}, el("label",{class:"label"},"Clienta"), clientaInput, accionesClienta),
+    el("div",{}, el("label",{class:"label"},"Teléfono (opcional)"), phoneInput, phoneActions),
     el("div",{}, el("label",{class:"label"},"Servicios (puedes elegir varios)"), chips, totalLine),
+    el("div",{}, el("label",{class:"label"},"Cobro"), pagoChips),
     el("div",{}, el("label",{class:"label"},"Notas (opcional)"), notasInput),
     err
   );
@@ -411,10 +665,11 @@ function openCita(dateKey, cita){
 
   function guardar(){
     if(!clientaInput.value.trim()){ err.textContent="Escribe el nombre de la clienta."; return; }
+    const nombreClienta = clientaInput.value.trim();
     const obj = {
       id: (cita && cita.id) ? cita.id : (Date.now()+"-"+Math.random().toString(36).slice(2,7)),
-      hora: horaInput.value, clienta: clientaInput.value.trim(),
-      servicios: sel, notas: notasInput.value.trim()
+      hora: horaInput.value, clienta: nombreClienta,
+      servicios: sel, notas: notasInput.value.trim(), pago: pagoSel || null
     };
     const arr = state.citas[dateKey] ? state.citas[dateKey].slice() : [];
     if(cita && cita.id){
@@ -422,6 +677,8 @@ function openCita(dateKey, cita){
       if(i>=0) arr[i]=obj; else arr.push(obj);
     } else arr.push(obj);
     state.citas = Object.assign({}, state.citas); state.citas[dateKey]=arr;
+    const tel = phoneInput.value.trim();
+    if(tel){ state.clientes = Object.assign({}, state.clientes); state.clientes[nombreClienta]=tel; }
     save(); closeOverlays(); render(); toast("Cita guardada");
   }
   function borrar(){
@@ -563,10 +820,272 @@ function openSearch(){
   setTimeout(()=>input.focus(), 50);
 }
 
-/* ============ modal calendario mensual ============ */
-function openMonthView(){
+/* ============ ventana de clientas (separada de la cita) ============ */
+function openClientesView(opts){
+  opts = opts || {};
   closeOverlays();
-  const base = fromKey(selectedKey);
+  const { overlay, sheet } = buildSheet();
+
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}},"Clientas"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"},
+      onClick:()=>{ closeOverlays(); if(opts.onCancel) opts.onCancel(); }}, icon("x",20))
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 14px",color:"var(--muted)"}},
+    opts.onSelect ? "Toca una clienta para usarla en esta cita." : "Nombres y teléfonos guardados, fuera del formulario de citas."));
+
+  const searchInput = el("input",{class:"field",placeholder:"Buscar clienta…",style:{marginBottom:"10px"}});
+  sheet.appendChild(searchInput);
+
+  const addRow = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px",marginBottom:"14px"}});
+  if(contactsSupported()){
+    addRow.appendChild(el("button",{class:"chip", onClick: async ()=>{
+      const picked = await pickContact();
+      if(picked && picked.nombre){
+        const tel = picked.tel || state.clientes[picked.nombre] || "";
+        state.clientes = Object.assign({}, state.clientes);
+        state.clientes[picked.nombre] = tel;
+        save();
+        if(opts.onSelect){ closeOverlays(); opts.onSelect(picked.nombre, tel); }
+        else { renderList(); toast("Clienta guardada"); }
+      } else if(!picked){ toast("No se pudo importar el contacto"); }
+    }}, icon("upload",14), "Importar de contactos"));
+  }
+  addRow.appendChild(el("button",{class:"chip", onClick:()=>openClienteForm(null, opts)}, icon("plus",14), "Nueva clienta"));
+  sheet.appendChild(addRow);
+
+  const list = el("div",{style:{display:"flex",flexDirection:"column",gap:"8px"}});
+  sheet.appendChild(list);
+
+  function renderList(){
+    list.innerHTML = "";
+    const q = normTxt(searchInput.value.trim());
+    const nombres = Object.keys(state.clientes).sort((a,b)=>a.localeCompare(b,"es"));
+    const filtradas = q ? nombres.filter(n=>normTxt(n).indexOf(q)>=0) : nombres;
+    if(filtradas.length===0){
+      list.appendChild(el("div",{class:"card",style:{padding:"24px 16px",textAlign:"center",borderStyle:"dashed",color:"var(--muted)"}},
+        el("p",{style:{fontSize:"13px",margin:"0"}}, nombres.length===0 ? "Aún no tienes clientas guardadas." : "Sin resultados.")
+      ));
+      return;
+    }
+    filtradas.forEach(n=>{
+      const tel = state.clientes[n];
+      list.appendChild(el("button",{class:"card",style:{textAlign:"left",padding:"12px 16px",display:"flex",alignItems:"center",gap:"10px"},
+        onClick:()=>{
+          if(opts.onSelect){ closeOverlays(); opts.onSelect(n, tel); }
+          else openClienteForm({nombre:n, telefono:tel});
+        }},
+        el("span",{style:{flex:"1",minWidth:"0"}},
+          el("span",{class:"truncate",style:{display:"block",fontSize:"15px",fontWeight:"500"}}, n),
+          tel ? el("span",{class:"truncate tabnum",style:{display:"block",fontSize:"13px",color:"var(--muted)"}}, tel)
+              : el("span",{style:{display:"block",fontSize:"12px",color:"var(--muted)"}},"Sin teléfono")
+        ),
+        el("span",{style:{color:"var(--muted)"}}, icon(opts.onSelect?"check":"pencil",14))
+      ));
+    });
+  }
+  searchInput.addEventListener("input", renderList);
+  renderList();
+
+  document.body.appendChild(overlay);
+}
+
+function openClienteForm(cliente, opts){
+  opts = opts || {};
+  closeOverlays();
+  const { overlay, sheet } = buildSheet();
+
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"16px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}}, cliente?"Editar clienta":"Nueva clienta"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:()=>openClientesView(opts)}, icon("x",20))
+  ));
+
+  const nombreInput = el("input",{class:"field",placeholder:"Nombre de la clienta"});
+  nombreInput.value = cliente ? cliente.nombre : "";
+  const telInput = el("input",{class:"field",type:"tel",placeholder:"Ej. 612 345 678"});
+  telInput.value = cliente ? (cliente.telefono||"") : "";
+  const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
+
+  const campos = [
+    el("div",{}, el("label",{class:"label"},"Nombre"), nombreInput),
+    el("div",{}, el("label",{class:"label"},"Teléfono"), telInput),
+    err
+  ];
+  if(contactsSupported()){
+    campos.unshift(el("button",{class:"chip",style:{alignSelf:"flex-start"}, onClick: async ()=>{
+      const picked = await pickContact();
+      if(picked){ if(picked.nombre) nombreInput.value=picked.nombre; if(picked.tel) telInput.value=picked.tel; }
+      else toast("No se pudo importar el contacto");
+    }}, icon("upload",14), "Importar de contactos"));
+  }
+  sheet.appendChild(el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}}, campos));
+
+  function guardar(){
+    const nombre = nombreInput.value.trim();
+    if(!nombre){ err.textContent="Escribe el nombre."; return; }
+    const tel = telInput.value.trim();
+    const nuevo = Object.assign({}, state.clientes);
+    if(cliente && cliente.nombre && cliente.nombre!==nombre) delete nuevo[cliente.nombre];
+    nuevo[nombre] = tel;
+    state.clientes = nuevo;
+    save();
+    if(opts.onSelect){ closeOverlays(); opts.onSelect(nombre, tel); }
+    else { toast("Clienta guardada"); openClientesView(opts); }
+  }
+  function borrar(){
+    const nuevo = Object.assign({}, state.clientes);
+    delete nuevo[cliente.nombre];
+    state.clientes = nuevo;
+    save(); toast("Clienta eliminada"); openClientesView(opts);
+  }
+
+  const actions = el("div",{style:{display:"flex",gap:"8px",marginTop:"20px"}});
+  if(cliente){
+    actions.appendChild(el("button",{"aria-label":"Eliminar clienta",
+      style:{height:"48px",width:"48px",display:"grid",placeItems:"center",borderRadius:"12px",flexShrink:"0",background:"#F4E6E4",color:"var(--danger)"},
+      onClick:borrar}, icon("trash",18)));
+  }
+  actions.appendChild(el("button",{class:"primary",style:{flex:"1",height:"48px"}, onClick:guardar},"Guardar"));
+  sheet.appendChild(actions);
+
+  document.body.appendChild(overlay);
+}
+
+/* ============ modal gasto ============ */
+function openGasto(gasto, mesRef, onDone){
+  closeOverlays();
+  const { overlay, sheet } = buildSheet();
+
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"16px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}}, gasto?"Editar gasto":"Nuevo gasto"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:()=>{ closeOverlays(); onDone&&onDone(); }}, icon("x",20))
+  ));
+
+  const fechaInput = el("input",{class:"field",type:"date"});
+  const hoy = new Date();
+  const fechaDefecto = (hoy.getFullYear()===mesRef.getFullYear() && hoy.getMonth()===mesRef.getMonth()) ? hoy : mesRef;
+  fechaInput.value = gasto ? gasto.fecha : toKey(fechaDefecto);
+  const conceptoInput = el("input",{class:"field",placeholder:"Ej. esmaltes, geles, limas…"});
+  conceptoInput.value = gasto ? (gasto.concepto||"") : "";
+  const importeInput = el("input",{class:"field",type:"number",step:"0.01",min:"0",inputmode:"decimal",placeholder:"0.00"});
+  importeInput.value = gasto ? (gasto.importe||"") : "";
+  const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
+
+  sheet.appendChild(el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}},
+    el("div",{}, el("label",{class:"label"},"Fecha"), fechaInput),
+    el("div",{}, el("label",{class:"label"},"Concepto"), conceptoInput),
+    el("div",{}, el("label",{class:"label"},"Importe (€)"), importeInput),
+    err
+  ));
+
+  function guardar(){
+    if(!fechaInput.value){ err.textContent="Elige una fecha."; return; }
+    const importe = parseFloat(importeInput.value);
+    if(!importe || importe<=0){ err.textContent="Pon un importe válido."; return; }
+    const obj = {
+      id: (gasto && gasto.id) ? gasto.id : (Date.now()+"-"+Math.random().toString(36).slice(2,7)),
+      fecha: fechaInput.value, concepto: conceptoInput.value.trim(), importe: importe
+    };
+    const arr = state.gastos.slice();
+    if(gasto && gasto.id){ const i=arr.findIndex(x=>x.id===gasto.id); if(i>=0) arr[i]=obj; else arr.push(obj); }
+    else arr.push(obj);
+    state.gastos = arr;
+    save(); closeOverlays(); toast("Gasto guardado"); onDone&&onDone();
+  }
+  function borrar(){
+    state.gastos = state.gastos.filter(x=>x.id!==gasto.id);
+    save(); closeOverlays(); toast("Gasto eliminado"); onDone&&onDone();
+  }
+
+  const actions = el("div",{style:{display:"flex",gap:"8px",marginTop:"20px"}});
+  if(gasto){
+    actions.appendChild(el("button",{"aria-label":"Eliminar gasto",
+      style:{height:"48px",width:"48px",display:"grid",placeItems:"center",borderRadius:"12px",flexShrink:"0",background:"#F4E6E4",color:"var(--danger)"},
+      onClick:borrar}, icon("trash",18)));
+  }
+  actions.appendChild(el("button",{class:"primary",style:{flex:"1",height:"48px"}, onClick:guardar},"Guardar"));
+  sheet.appendChild(actions);
+
+  document.body.appendChild(overlay);
+}
+
+/* ============ pantalla de disponibilidad para compartir ============ */
+async function openDisponibilidad(mesInicial){
+  closeOverlays();
+  let viewMonth = (mesInicial instanceof Date) ? new Date(mesInicial.getFullYear(), mesInicial.getMonth(), 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const { overlay, sheet } = buildSheet();
+
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}},"Disponibilidad"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:closeOverlays}, icon("x",20))
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 14px",color:"var(--muted)"}},
+    "Una imagen con los horarios libres, lista para enviar por WhatsApp."));
+
+  const nav = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"14px"}});
+  const monthLabel = el("p",{class:"serif",style:{fontSize:"16px",margin:"0"}});
+  nav.appendChild(el("button",{class:"ico","aria-label":"Mes anterior",
+    onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()-1,1); actualizar(); }}, icon("chevron-left",18)));
+  nav.appendChild(monthLabel);
+  nav.appendChild(el("button",{class:"ico","aria-label":"Mes siguiente",
+    onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()+1,1); actualizar(); }}, icon("chevron-right",18)));
+  sheet.appendChild(nav);
+
+  const previewWrap = el("div",{style:{borderRadius:"14px",overflow:"hidden",border:"1px solid var(--line)",marginBottom:"10px",background:"var(--bg)",minHeight:"120px",display:"flex",alignItems:"center",justifyContent:"center"}});
+  const img = el("img",{style:{display:"block",width:"100%"}});
+  previewWrap.appendChild(img);
+  sheet.appendChild(previewWrap);
+
+  const estadoTxt = el("p",{style:{fontSize:"12px",color:"var(--muted)",textAlign:"center",margin:"0 0 14px"}}, "Generando…");
+  sheet.appendChild(estadoTxt);
+
+  let canvasActual = null;
+
+  async function actualizar(){
+    monthLabel.textContent = cap(fmtMes(viewMonth));
+    estadoTxt.textContent = "Generando…";
+    const dias = diasDisponibles(viewMonth);
+    canvasActual = await generarImagenDisponibilidad(viewMonth, dias);
+    img.src = canvasActual.toDataURL("image/png");
+    estadoTxt.textContent = dias.length
+      ? "Huecos libres en "+dias.length+" día"+(dias.length===1?"":"s")+"."
+      : "No quedan horarios libres este mes.";
+  }
+
+  const actions = el("div",{style:{display:"flex",gap:"8px"}});
+  actions.appendChild(el("button",{class:"chip", onClick:actualizar}, icon("calendar",14), "Actualizar"));
+  actions.appendChild(el("button",{class:"primary",
+    style:{flex:"1",height:"48px",display:"flex",alignItems:"center",justifyContent:"center",gap:"8px"},
+    onClick:()=>{
+      if(!canvasActual) return;
+      canvasActual.toBlob(async (blob)=>{
+        const nombreArchivo = "disponibilidad-"+toKey(viewMonth)+".png";
+        try{
+          const file = new File([blob], nombreArchivo, {type:"image/png"});
+          if(navigator.canShare && navigator.canShare({files:[file]})){
+            await navigator.share({files:[file], title:"Disponibilidad"});
+            return;
+          }
+        }catch(e){}
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = nombreArchivo;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url), 1000);
+        toast("Imagen descargada");
+      }, "image/png");
+    }
+  }, icon("download",16), "Descargar / Compartir"));
+  sheet.appendChild(actions);
+
+  document.body.appendChild(overlay);
+  actualizar();
+}
+
+/* ============ modal calendario mensual ============ */
+function openMonthView(mesInicial){
+  closeOverlays();
+  const base = (mesInicial instanceof Date) ? mesInicial : fromKey(selectedKey);
   let viewMonth = new Date(base.getFullYear(), base.getMonth(), 1);
   const { overlay, sheet } = buildSheet();
   const todayKey = toKey(new Date());
@@ -586,6 +1105,16 @@ function openMonthView(){
     onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()+1,1); renderGrid(); }}, icon("chevron-right",18)));
   sheet.appendChild(nav);
 
+  sheet.appendChild(el("button",{class:"chip",style:{marginBottom:"14px"},
+    onClick:()=>openDisponibilidad(viewMonth)}, icon("download",14), "Compartir disponibilidad"));
+
+  const totalMesLine = el("p",{style:{fontSize:"15px",fontWeight:"600",color:"var(--accent)",margin:"0 0 2px",textAlign:"center"}});
+  sheet.appendChild(totalMesLine);
+  const desgloseLine = el("p",{style:{fontSize:"12px",margin:"0 0 6px",textAlign:"center",color:"var(--muted)"}});
+  sheet.appendChild(desgloseLine);
+  const gananciaLine = el("p",{style:{fontSize:"13px",fontWeight:"600",margin:"0 0 14px",textAlign:"center",color:"var(--ink)"}});
+  sheet.appendChild(gananciaLine);
+
   const headersRow = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:"6px"}});
   ["L","M","X","J","V","S","D"].forEach(d=>{
     headersRow.appendChild(el("span",{style:{textAlign:"center",fontSize:"10px",fontWeight:"500",letterSpacing:".5px",textTransform:"uppercase",color:"var(--muted)"}}, d));
@@ -604,6 +1133,11 @@ function openMonthView(){
 
   function renderGrid(){
     monthLabel.textContent = cap(fmtMes(viewMonth));
+    const cobrado = totalMes(viewMonth);
+    const gastado = totalGastosMes(viewMonth);
+    totalMesLine.textContent = "Total cobrado: " + eur(cobrado);
+    desgloseLine.textContent = "Efectivo "+eur(totalMes(viewMonth,"efectivo"))+" · Tarjeta "+eur(totalMes(viewMonth,"tarjeta"))+" · Bizum "+eur(totalMes(viewMonth,"bizum"));
+    gananciaLine.textContent = "Gastos: -"+eur(gastado)+"   →   Ganancia neta: "+eur(cobrado-gastado);
     cellsWrap.innerHTML = "";
     const gridStart = startOfWeek(viewMonth);
     for(let i=0;i<42;i++){
@@ -630,28 +1164,59 @@ function openMonthView(){
       }
       cellsWrap.appendChild(cell);
     }
+    renderGastos();
   }
-  renderGrid();
 
-  sheet.appendChild(el("div",{style:{display:"flex",gap:"16px",fontSize:"12px",color:"var(--muted)"}},
+  sheet.appendChild(el("div",{style:{display:"flex",gap:"16px",fontSize:"12px",color:"var(--muted)",marginBottom:"18px"}},
     el("span",{style:{display:"flex",alignItems:"center",gap:"6px"}},
       el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--accent)",display:"inline-block"}}), "Con citas"),
     el("span",{style:{display:"flex",alignItems:"center",gap:"6px"}},
       el("span",{style:{height:"12px",width:"12px",borderRadius:"4px",background:"var(--paper)",border:"1px solid var(--line)",display:"inline-block"}}), "Libre")
   ));
 
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"8px"}},
+    el("p",{class:"label",style:{margin:"0"}},"Gastos del mes"),
+    el("button",{class:"ico","aria-label":"Añadir gasto",
+      onClick:()=>openGasto(null, viewMonth, ()=>openMonthView(viewMonth))}, icon("plus",16))
+  ));
+  const gastosList = el("div",{style:{display:"flex",flexDirection:"column",gap:"6px"}});
+  sheet.appendChild(gastosList);
+
+  function renderGastos(){
+    gastosList.innerHTML = "";
+    const lista = gastosDelMes(viewMonth).slice().sort((a,b)=>a.fecha.localeCompare(b.fecha));
+    if(lista.length===0){
+      gastosList.appendChild(el("p",{style:{fontSize:"12px",color:"var(--muted)",margin:"0"}},"Sin gastos registrados este mes."));
+      return;
+    }
+    lista.forEach(g=>{
+      gastosList.appendChild(el("button",{style:{textAlign:"left",display:"flex",alignItems:"center",gap:"10px",
+          padding:"9px 12px",borderRadius:"10px",background:"var(--paper)",border:"1px solid var(--line)"},
+        onClick:()=>openGasto(g, viewMonth, ()=>openMonthView(viewMonth))},
+        el("span",{class:"tabnum",style:{fontSize:"11px",color:"var(--muted)",whiteSpace:"nowrap"}}, cap(fmtDiaCorto(fromKey(g.fecha)))),
+        el("span",{class:"truncate",style:{flex:"1",minWidth:"0",fontSize:"13px"}}, g.concepto||"Gasto"),
+        el("span",{class:"tabnum",style:{fontSize:"13px",fontWeight:"600",color:"var(--danger)"}}, "-"+eur(g.importe))
+      ));
+    });
+  }
+
+  renderGrid();
   document.body.appendChild(overlay);
 }
 
 /* ============ backup ============ */
 function exportar(){
+  state.ultimoBackup = new Date().toISOString();
+  save();
   const blob = new Blob([JSON.stringify(state,null,2)], {type:"application/json"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = "agenda-backup-"+toKey(new Date())+".json";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  localStorage.removeItem(AVISO_KEY);
   toast("Backup descargado");
+  render();
 }
 $("#fileInput").addEventListener("change", function(e){
   const file = e.target.files && e.target.files[0];
@@ -666,6 +1231,9 @@ $("#fileInput").addEventListener("change", function(e){
         citas: normCitas(p.citas),
         servicios: s.length ? s : state.servicios,
         incluirSabado: typeof p.incluirSabado==="boolean" ? p.incluirSabado : state.incluirSabado,
+        clientes: p.clientes ? normClientes(p.clientes) : state.clientes,
+        gastos: p.gastos ? normGastos(p.gastos) : state.gastos,
+        ultimoBackup: typeof p.ultimoBackup==="string" ? p.ultimoBackup : state.ultimoBackup,
       };
       save(); closeOverlays(); render(); toast("Backup restaurado");
     }catch(err){ toast("El archivo no es un backup válido"); }
