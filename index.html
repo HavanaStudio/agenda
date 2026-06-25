@@ -794,7 +794,8 @@ function openCita(dateKey, cita, draft){
     } else arr.push(obj);
     state.citas = Object.assign({}, state.citas); state.citas[dateKey]=arr;
     const tel = phoneInput.value.trim();
-    if(tel){ state.clientes = Object.assign({}, state.clientes); state.clientes[nombreClienta]=tel; }
+    state.clientes = Object.assign({}, state.clientes);
+    state.clientes[nombreClienta] = tel || state.clientes[nombreClienta] || "";
     save(); closeOverlays(); render(); toast("Cita guardada");
   }
   function borrar(){
@@ -953,6 +954,19 @@ function openSearch(){
 }
 
 /* ============ ventana de clientas (separada de la cita) ============ */
+function sincronizarClientesDesdeCitas(){
+  const nuevo = Object.assign({}, state.clientes);
+  let añadidos = 0;
+  for(const k in state.citas){
+    state.citas[k].forEach(c=>{
+      if(c.clienta && !(c.clienta in nuevo)){ nuevo[c.clienta] = ""; añadidos++; }
+    });
+  }
+  state.clientes = nuevo;
+  save();
+  return añadidos;
+}
+
 function openClientesView(opts){
   opts = opts || {};
   closeOverlays();
@@ -984,6 +998,11 @@ function openClientesView(opts){
     }}, icon("upload",14), "Importar de contactos"));
   }
   addRow.appendChild(el("button",{class:"chip", onClick:()=>openClienteForm(null, opts)}, icon("plus",14), "Nueva clienta"));
+  addRow.appendChild(el("button",{class:"chip", onClick:()=>{
+    const n = sincronizarClientesDesdeCitas();
+    renderList();
+    toast(n>0 ? "Se recuperaron "+n+" clienta"+(n===1?"":"s") : "No había clientas nuevas que recuperar");
+  }}, icon("calendar",14), "Recuperar de las citas"));
   sheet.appendChild(addRow);
 
   const list = el("div",{style:{display:"flex",flexDirection:"column",gap:"8px"}});
