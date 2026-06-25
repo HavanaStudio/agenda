@@ -290,16 +290,15 @@ function rachaMesesConsecutivos(nombre){
       meses[d.getFullYear()*12 + d.getMonth()] = true;
     });
   });
-  const claves = Object.keys(meses).map(Number);
+  const claves = Object.keys(meses).map(Number).sort((a,b)=>a-b);
   if(claves.length===0) return 0;
-  const ahora = new Date();
-  const mesActual = ahora.getFullYear()*12 + ahora.getMonth();
-  // contar hacia atrás desde el mes actual; si este mes aún no ha venido, empezar desde el anterior
-  let inicio = meses[mesActual] ? mesActual : mesActual-1;
-  let racha = 0;
-  let m = inicio;
-  while(meses[m]){ racha++; m--; }
-  return racha;
+  // racha más larga de meses CONSECUTIVOS en todo el historial (pasado, presente o futuro)
+  let mejor = 1, actual = 1;
+  for(let i=1;i<claves.length;i++){
+    if(claves[i] === claves[i-1]+1){ actual++; if(actual>mejor) mejor=actual; }
+    else actual = 1;
+  }
+  return mejor;
 }
 function premioFidelidad(nombre){
   if(!state.fidelidadActiva) return null;
