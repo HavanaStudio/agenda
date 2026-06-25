@@ -438,14 +438,17 @@ function formatHora12(hora24){
   let h12 = h%12; if(h12===0) h12=12;
   return h12+":"+m+" "+ampm;
 }
-function diasDisponibles(viewMonth){
+function diasDisponibles(viewMonth, rango){
   const hoy = new Date(); hoy.setHours(0,0,0,0);
   const year = viewMonth.getFullYear(), month = viewMonth.getMonth();
   const ultimoDia = new Date(year, month+1, 0).getDate();
   const out = [];
   for(let day=1; day<=ultimoDia; day++){
+    // filtro de rango: q1 = días 1-15, q2 = días 16-fin
+    if(rango==="q1" && day>15) continue;
+    if(rango==="q2" && day<16) continue;
     const d = new Date(year, month, day);
-    if(d < hoy) continue;
+    if(d <= hoy) continue; // el día de hoy (y los pasados) nunca aparecen: empieza desde mañana
     const dow = d.getDay();
     if(dow===0) continue;
     if(dow===6 && !state.incluirSabado) continue;
@@ -466,7 +469,7 @@ function roundRect(ctx,x,y,w,h,r){
   ctx.arcTo(x,y,x+w,y,r);
   ctx.closePath();
 }
-async function generarImagenDisponibilidad(viewMonth, dias){
+async function generarImagenDisponibilidad(viewMonth, dias, subtitulo){
   if(document.fonts && document.fonts.ready){ try{ await document.fonts.ready; }catch(e){} }
 
   const W = 720, PAD = 56;
@@ -548,7 +551,7 @@ async function generarImagenDisponibilidad(viewMonth, dias){
 
   ctx.fillStyle = COL.accent;
   ctx.font = F_SUB;
-  ctx.fillText(cap(fmtMes(viewMonth)), PAD, titleY+28);
+  ctx.fillText(subtitulo || cap(fmtMes(viewMonth)), PAD, titleY+28);
 
   ctx.strokeStyle = COL.line; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(PAD, titleY+46); ctx.lineTo(W-PAD, titleY+46); ctx.stroke();
@@ -965,9 +968,10 @@ function buildMain(){
   } else {
     citas.forEach(c=>{
       const precio = totalCita(c);
-      const card = el("button",{class:"card",style:{textAlign:"left",padding:"12px 16px",display:"flex",alignItems:"flex-start",gap:"12px"},
+      const card = el("div",{class:"card",style:{padding:"12px 16px",display:"flex",alignItems:"flex-start",gap:"12px"}});
+      const main = el("button",{style:{flex:"1",minWidth:"0",textAlign:"left",display:"flex",alignItems:"flex-start",gap:"12px",background:"none",border:"none",padding:"0",color:"inherit"},
         onClick:()=>openCita(selectedKey,c)});
-      card.appendChild(el("span",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"14px",fontWeight:"600",color:"var(--accent)",paddingTop:"2px",whiteSpace:"nowrap"},class:"tabnum"},
+      main.appendChild(el("span",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"14px",fontWeight:"600",color:"var(--accent)",paddingTop:"2px",whiteSpace:"nowrap"},class:"tabnum"},
         icon("clock",13), formatHora12(c.hora)));
       const mid = el("span",{style:{flex:"1",minWidth:"0"}},
         el("span",{class:"truncate",style:{display:"block",fontSize:"15px",fontWeight:"500"}}, c.clienta),
@@ -979,12 +983,26 @@ function buildMain(){
         background: pagoOn ? "var(--accentSoft)" : "transparent",
         border: pagoOn ? "none" : "1px dashed var(--line)",
         color: pagoOn ? "var(--accent)" : "var(--muted)"}}, pagoOn ? PAGO_LABELS[c.pago] : "Por cobrar"));
-      card.appendChild(mid);
+      main.appendChild(mid);
       const right = el("span",{style:{display:"flex",flexDirection:"column",alignItems:"flex-end",paddingTop:"2px"}});
       if(precio>0) right.appendChild(el("span",{class:"tabnum",style:{fontSize:"14px",fontWeight:"600"}}, eur(precio)));
       if(c.propina>0) right.appendChild(el("span",{class:"tabnum",style:{fontSize:"11px",color:"var(--accent)"}}, "+"+eur(c.propina)+" prop."));
       right.appendChild(el("span",{style:{marginTop:"4px",color:"var(--muted)"}}, icon("pencil",14)));
-      card.appendChild(right);
+      main.appendChild(right);
+      card.appendChild(main);
+      // botón eliminar directo
+      card.appendChild(el("button",{"aria-label":"Eliminar cita",
+        style:{flexShrink:"0",alignSelf:"center",height:"38px",width:"38px",display:"grid",placeItems:"center",borderRadius:"10px",background:"#F4E6E4",color:"var(--danger)"},
+        onClick:(e)=>{
+          e.stopPropagation();
+          confirmar("¿Eliminar la cita de "+(c.clienta||"esta clienta")+" a las "+formatHora12(c.hora)+"?", ()=>{
+            const arr = (state.citas[selectedKey]||[]).filter(x=>x.id!==c.id);
+            state.citas = Object.assign({}, state.citas);
+            if(arr.length) state.citas[selectedKey]=arr; else delete state.citas[selectedKey];
+            save(); render(); toast("Cita eliminada");
+          });
+        }
+      }, icon("trash",16)));
       list.appendChild(card);
     });
   }
@@ -1006,6 +1024,19 @@ function buildSheet(){
   const sheet = el("div",{class:"sheet", onClick:(e)=>e.stopPropagation()});
   overlay.appendChild(sheet);
   return { overlay, sheet };
+}
+function confirmar(mensaje, onSi, textoSi){
+  const overlay = el("div",{class:"overlay", onClick:(e)=>{ if(e.target===overlay) overlay.remove(); }});
+  const sheet = el("div",{class:"sheet", onClick:(e)=>e.stopPropagation()});
+  overlay.appendChild(sheet);
+  sheet.appendChild(el("p",{style:{fontSize:"15px",lineHeight:"1.4",margin:"0 0 20px"}}, mensaje));
+  sheet.appendChild(el("div",{style:{display:"flex",gap:"8px"}},
+    el("button",{style:{flex:"1",height:"48px",borderRadius:"12px",background:"var(--bg)",border:"1px solid var(--line)",color:"var(--ink)",fontWeight:"500"},
+      onClick:()=>overlay.remove()}, "Cancelar"),
+    el("button",{style:{flex:"1",height:"48px",borderRadius:"12px",background:"var(--danger)",color:"#fff",fontWeight:"500"},
+      onClick:()=>{ overlay.remove(); onSi(); }}, textoSi||"Eliminar")
+  ));
+  document.body.appendChild(overlay);
 }
 
 /* ============ modal cita ============ */
@@ -1527,9 +1558,9 @@ function openSettings(){
     ),
     el("div",{style:{display:"flex",gap:"8px"}},
       pinActivo() ? el("button",{class:"chip", onClick:()=>{
-        if(confirm("¿Quitar el PIN? Cualquiera podrá abrir la app sin código.")){
+        confirmar("¿Quitar el PIN? Cualquiera podrá abrir la app sin código.", ()=>{
           quitarPin(); render(); openSettings(); toast("PIN desactivado");
-        }
+        }, "Quitar PIN");
       }}, "Quitar") : null,
       el("button",{class:"chip", onClick:openConfigurarPin}, pinActivo() ? "Cambiar" : "Activar")
     )
@@ -1967,6 +1998,19 @@ async function openDisponibilidad(mesInicial){
     onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()+1,1); actualizar(); }}, icon("chevron-right",18)));
   sheet.appendChild(nav);
 
+  let rangoSel = "q1"; // q1 = primera quincena, q2 = segunda, mes = todo
+  const rangoWrap = el("div",{style:{display:"flex",gap:"8px",marginBottom:"14px",flexWrap:"wrap"}});
+  function renderRango(){
+    rangoWrap.innerHTML="";
+    [["q1","1ª quincena"],["q2","2ª quincena"],["mes","Mes entero"]].forEach(([val,label])=>{
+      const on = rangoSel===val;
+      rangoWrap.appendChild(el("button",{type:"button",class:"chip"+(on?" chip-on":""),
+        onClick:()=>{ rangoSel=val; renderRango(); actualizar(); }}, label));
+    });
+  }
+  renderRango();
+  sheet.appendChild(rangoWrap);
+
   const previewWrap = el("div",{style:{borderRadius:"14px",overflow:"hidden",border:"1px solid var(--line)",marginBottom:"10px",background:"var(--bg)",minHeight:"120px",display:"flex",alignItems:"center",justifyContent:"center"}});
   const img = el("img",{style:{display:"block",width:"100%"}});
   previewWrap.appendChild(img);
@@ -1977,15 +2021,22 @@ async function openDisponibilidad(mesInicial){
 
   let canvasActual = null;
 
+  function etiquetaRango(){
+    const mes = cap(fmtMes(viewMonth));
+    if(rangoSel==="q1") return "1–15 "+mes;
+    if(rangoSel==="q2") return "16–fin "+mes;
+    return mes;
+  }
+
   async function actualizar(){
     monthLabel.textContent = cap(fmtMes(viewMonth));
     estadoTxt.textContent = "Generando…";
-    const dias = diasDisponibles(viewMonth);
-    canvasActual = await generarImagenDisponibilidad(viewMonth, dias);
+    const dias = diasDisponibles(viewMonth, rangoSel);
+    canvasActual = await generarImagenDisponibilidad(viewMonth, dias, etiquetaRango());
     img.src = canvasActual.toDataURL("image/png");
     estadoTxt.textContent = dias.length
       ? "Huecos libres en "+dias.length+" día"+(dias.length===1?"":"s")+"."
-      : "No quedan horarios libres este mes.";
+      : "No quedan horarios libres en este periodo.";
   }
 
   const actions = el("div",{style:{display:"flex",gap:"8px"}});
@@ -1995,7 +2046,7 @@ async function openDisponibilidad(mesInicial){
     onClick:()=>{
       if(!canvasActual) return;
       canvasActual.toBlob(async (blob)=>{
-        const nombreArchivo = "disponibilidad-"+toKey(viewMonth)+".png";
+        const nombreArchivo = "disponibilidad-"+toKey(viewMonth)+"-"+rangoSel+".png";
         try{
           const file = new File([blob], nombreArchivo, {type:"image/png"});
           if(navigator.canShare && navigator.canShare({files:[file]})){
