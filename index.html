@@ -224,7 +224,8 @@ function normGastos(gastos){
 /* ============ estado ============ */
 let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true, clientes:{}, gastos:[], ultimoBackup:null, vacaciones:[],
   negocio:"Mi negocio", tema:"rosado", horarios:HORARIOS_DEFAULT.slice(), configurado:false, logo:null, piePersonalizado:"",
-  fidelidadActiva:false, fidelidadMeses:5, fidelidadPremio:"un diseño gratis" };
+  fidelidadActiva:false, fidelidadMeses:5, fidelidadPremio:"un diseño gratis",
+  conceptosGasto:["Autónomos","Luz","Agua","Local","Gestoría"] };
 let selectedKey = toKey(new Date());
 
 function load(){
@@ -249,6 +250,7 @@ function load(){
         fidelidadActiva: p.fidelidadActiva===true,
         fidelidadMeses: (typeof p.fidelidadMeses==="number" && p.fidelidadMeses>=2) ? p.fidelidadMeses : 5,
         fidelidadPremio: typeof p.fidelidadPremio==="string" && p.fidelidadPremio.trim() ? p.fidelidadPremio : "un diseño gratis",
+        conceptosGasto: Array.isArray(p.conceptosGasto) ? p.conceptosGasto.filter(x=>typeof x==="string" && x.trim()) : ["Autónomos","Luz","Agua","Local","Gestoría"],
         configurado: true, // ya había datos guardados de antes: no forzar el asistente
       };
     }
@@ -1652,6 +1654,37 @@ function openSettings(){
   });
   sheet.appendChild(servList);
 
+  // conceptos de gasto fijos
+  sheet.appendChild(el("p",{style:{fontSize:"12px",fontWeight:"500",margin:"20px 0 8px",color:"var(--muted)"}},"Gastos fijos del mes"));
+  sheet.appendChild(el("p",{style:{fontSize:"11px",lineHeight:"1.4",margin:"0 0 10px",color:"var(--muted)"}},
+    "Conceptos que se repiten cada mes (autónomos, luz, local…). Al registrar un gasto solo los tocas y pones el importe, sin escribir el nombre."));
+  const cgNombre = el("input",{class:"field",placeholder:"Ej. Seguro, Internet…",style:{flex:"1",minWidth:"0",fontSize:"14px"}});
+  const cgErr = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0 0 8px"}});
+  function añadirConcepto(){
+    const n = cgNombre.value.trim();
+    if(!n){ cgErr.textContent="Escribe el nombre del gasto fijo."; return; }
+    if((state.conceptosGasto||[]).some(x=>normTxt(x)===normTxt(n))){ cgErr.textContent="Ya tienes ese gasto fijo."; return; }
+    cgErr.textContent="";
+    state.conceptosGasto = (state.conceptosGasto||[]).concat([n]);
+    save(); render(); openSettings();
+  }
+  cgNombre.addEventListener("keydown",e=>{ if(e.key==="Enter") añadirConcepto(); });
+  sheet.appendChild(el("div",{style:{display:"flex",gap:"8px",marginBottom:"8px"}},
+    cgNombre,
+    el("button",{class:"primary","aria-label":"Añadir gasto fijo",style:{height:"44px",width:"44px",display:"grid",placeItems:"center",flexShrink:"0"},
+      onClick:añadirConcepto}, icon("plus",18))
+  ));
+  sheet.appendChild(cgErr);
+  const cgList = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
+  (state.conceptosGasto||[]).forEach(nombre=>{
+    cgList.appendChild(el("span",{class:"chip chip-on"},
+      nombre,
+      el("button",{type:"button","aria-label":"Quitar "+nombre,style:{marginLeft:"2px",display:"flex",color:"#fff"},
+        onClick:()=>{ state.conceptosGasto = state.conceptosGasto.filter(x=>x!==nombre); save(); render(); openSettings(); }}, icon("x",12))
+    ));
+  });
+  sheet.appendChild(cgList);
+
   document.body.appendChild(overlay);
 }
 
@@ -1934,13 +1967,30 @@ function openGasto(gasto, mesRef, onDone){
   fechaInput.value = gasto ? gasto.fecha : toKey(fechaDefecto);
   const conceptoInput = el("input",{class:"field",placeholder:"Ej. esmaltes, geles, limas…"});
   conceptoInput.value = gasto ? (gasto.concepto||"") : "";
+
+  // chips de conceptos fijos guardados
+  const conceptoChips = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px",marginBottom:"8px"}});
+  function renderConceptoChips(){
+    conceptoChips.innerHTML="";
+    (state.conceptosGasto||[]).forEach(nombre=>{
+      const on = normTxt(conceptoInput.value)===normTxt(nombre);
+      const chip = el("button",{type:"button",class:"chip"+(on?" chip-on":""),
+        onClick:()=>{ conceptoInput.value=nombre; renderConceptoChips(); }});
+      if(on) chip.appendChild(icon("check",14));
+      chip.appendChild(document.createTextNode(nombre));
+      conceptoChips.appendChild(chip);
+    });
+  }
+  renderConceptoChips();
+  conceptoInput.addEventListener("input", renderConceptoChips);
+
   const importeInput = el("input",{class:"field",type:"number",step:"0.01",min:"0",inputmode:"decimal",placeholder:"0.00"});
   importeInput.value = gasto ? (gasto.importe||"") : "";
   const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
 
   sheet.appendChild(el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}},
     el("div",{}, el("label",{class:"label"},"Fecha"), fechaInput),
-    el("div",{}, el("label",{class:"label"},"Concepto"), conceptoInput),
+    el("div",{}, el("label",{class:"label"},"Concepto"), conceptoChips, conceptoInput),
     el("div",{}, el("label",{class:"label"},"Importe (€)"), importeInput),
     err
   ));
@@ -2300,6 +2350,7 @@ $("#fileInput").addEventListener("change", function(e){
         fidelidadActiva: typeof p.fidelidadActiva==="boolean" ? p.fidelidadActiva : state.fidelidadActiva,
         fidelidadMeses: (typeof p.fidelidadMeses==="number" && p.fidelidadMeses>=2) ? p.fidelidadMeses : state.fidelidadMeses,
         fidelidadPremio: typeof p.fidelidadPremio==="string" && p.fidelidadPremio.trim() ? p.fidelidadPremio : state.fidelidadPremio,
+        conceptosGasto: Array.isArray(p.conceptosGasto) ? p.conceptosGasto.filter(x=>typeof x==="string" && x.trim()) : state.conceptosGasto,
         configurado: true,
       };
       aplicarTema(state.tema);
