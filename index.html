@@ -220,7 +220,8 @@ function normGastos(gastos){
 
 /* ============ estado ============ */
 let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true, clientes:{}, gastos:[], ultimoBackup:null, vacaciones:[],
-  negocio:"Mi negocio", tema:"rosado", horarios:HORARIOS_DEFAULT.slice(), configurado:false, logo:null, piePersonalizado:"" };
+  negocio:"Mi negocio", tema:"rosado", horarios:HORARIOS_DEFAULT.slice(), configurado:false, logo:null, piePersonalizado:"",
+  fidelidadActiva:false, fidelidadMeses:5, fidelidadPremio:"un diseño gratis" };
 let selectedKey = toKey(new Date());
 
 function load(){
@@ -242,6 +243,9 @@ function load(){
         horarios: Array.isArray(p.horarios) && p.horarios.length ? p.horarios : HORARIOS_DEFAULT.slice(),
         logo: typeof p.logo==="string" ? p.logo : null,
         piePersonalizado: typeof p.piePersonalizado==="string" ? p.piePersonalizado : "",
+        fidelidadActiva: p.fidelidadActiva===true,
+        fidelidadMeses: (typeof p.fidelidadMeses==="number" && p.fidelidadMeses>=2) ? p.fidelidadMeses : 5,
+        fidelidadPremio: typeof p.fidelidadPremio==="string" && p.fidelidadPremio.trim() ? p.fidelidadPremio : "un diseño gratis",
         configurado: true, // ya había datos guardados de antes: no forzar el asistente
       };
     }
@@ -270,6 +274,33 @@ function historialCliente(nombre){
   });
   const topServicios = Object.entries(conteoServicios).sort((a,b)=>b[1]-a[1]).slice(0,3).map(e=>e[0]);
   return { totalCitas, totalGastado, ultimaFecha, topServicios };
+}
+function rachaMesesConsecutivos(nombre){
+  // conjunto de meses (año*12+mes) en los que la clienta tuvo al menos una cita
+  const meses = {};
+  Object.keys(state.citas).forEach(k=>{
+    state.citas[k].forEach(c=>{
+      if(c.clienta!==nombre) return;
+      const d = fromKey(k);
+      meses[d.getFullYear()*12 + d.getMonth()] = true;
+    });
+  });
+  const claves = Object.keys(meses).map(Number);
+  if(claves.length===0) return 0;
+  const ahora = new Date();
+  const mesActual = ahora.getFullYear()*12 + ahora.getMonth();
+  // contar hacia atrás desde el mes actual; si este mes aún no ha venido, empezar desde el anterior
+  let inicio = meses[mesActual] ? mesActual : mesActual-1;
+  let racha = 0;
+  let m = inicio;
+  while(meses[m]){ racha++; m--; }
+  return racha;
+}
+function premioFidelidad(nombre){
+  if(!state.fidelidadActiva) return null;
+  const racha = rachaMesesConsecutivos(nombre);
+  if(racha >= state.fidelidadMeses) return { racha };
+  return null;
 }
 const DIAS_SEMANA_NOMBRE = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
 function estadisticasMes(refDate){
@@ -1180,9 +1211,12 @@ function openConfiguracionNegocio(forzado){
   const servNombre = el("input",{class:"field",placeholder:"Servicio…",style:{flex:"1",minWidth:"0",fontSize:"14px"}});
   const servPrecio = el("input",{class:"field",inputmode:"decimal",placeholder:"€",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
   const servDur = el("input",{class:"field",inputmode:"numeric",placeholder:"min",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
+  const servCfgErr = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"6px 0 0"}});
   function añadirServicio(){
     const n = servNombre.value.trim();
-    if(!n || serviciosSel.some(x=>x.nombre===n)){ servNombre.value=""; servPrecio.value=""; servDur.value=""; return; }
+    if(!n){ servCfgErr.textContent="Escribe el nombre del servicio."; return; }
+    if(serviciosSel.some(x=>normTxt(x.nombre)===normTxt(n))){ servCfgErr.textContent="Ya tienes un servicio con ese nombre."; return; }
+    servCfgErr.textContent="";
     const pv = servPrecio.value.trim().replace(",","."); const p = pv===""?null:Number(pv);
     const dv = parseInt(servDur.value,10); const d = Number.isFinite(dv)&&dv>0?dv:60;
     serviciosSel.push({nombre:n, precio:Number.isFinite(p)?p:null, duracion:d});
@@ -1197,7 +1231,8 @@ function openConfiguracionNegocio(forzado){
       servNombre, servPrecio, servDur,
       el("button",{class:"primary","aria-label":"Añadir servicio",style:{height:"40px",width:"40px",display:"grid",placeItems:"center",flexShrink:"0"},
         onClick:añadirServicio}, icon("plus",16))
-    )
+    ),
+    servCfgErr
   ));
   sheet.appendChild(el("p",{style:{fontSize:"11px",margin:"0 0 18px",color:"var(--muted)"}},
     "El precio y los minutos son opcionales, pero los minutos ayudan a calcular los huecos libres."));
@@ -1207,6 +1242,38 @@ function openConfiguracionNegocio(forzado){
   pieInput.value = state.piePersonalizado || "";
   sheet.appendChild(el("div",{style:{marginBottom:"18px"}},
     el("label",{class:"label"},"Pie para la imagen de disponibilidad (opcional)"), pieInput));
+
+  // premio de fidelidad
+  let fidelidadOn = state.fidelidadActiva===true;
+  let fidMeses = (typeof state.fidelidadMeses==="number" && state.fidelidadMeses>=2) ? state.fidelidadMeses : 5;
+  const fidExtra = el("div",{style:{display: fidelidadOn?"block":"none", marginTop:"10px"}});
+  const fidToggle = el("button",{type:"button"});
+  function renderFidToggle(){
+    fidToggle.className = "chip"+(fidelidadOn?" chip-on":"");
+    fidToggle.innerHTML = "";
+    if(fidelidadOn) fidToggle.appendChild(icon("check",14));
+    fidToggle.appendChild(document.createTextNode("Activar premio de fidelidad"));
+    fidExtra.style.display = fidelidadOn ? "block" : "none";
+  }
+  fidToggle.addEventListener("click", ()=>{ fidelidadOn=!fidelidadOn; renderFidToggle(); });
+  renderFidToggle();
+
+  const fidMesesInput = el("input",{class:"field",inputmode:"numeric",style:{width:"70px",textAlign:"center"}});
+  fidMesesInput.value = fidMeses;
+  const fidPremioInput = el("input",{class:"field",placeholder:"Ej. un diseño gratis"});
+  fidPremioInput.value = state.fidelidadPremio || "un diseño gratis";
+  fidExtra.appendChild(el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"10px"}},
+    el("span",{style:{fontSize:"13px",color:"var(--muted)"}},"Tras"), fidMesesInput,
+    el("span",{style:{fontSize:"13px",color:"var(--muted)"}},"meses seguidos viniendo")));
+  fidExtra.appendChild(el("div",{}, el("label",{class:"label"},"Recompensa que ofreces"), fidPremioInput));
+
+  sheet.appendChild(el("div",{style:{marginBottom:"18px"}},
+    el("label",{class:"label"},"Fidelización (opcional)"),
+    fidToggle,
+    fidExtra,
+    el("p",{style:{fontSize:"11px",margin:"8px 0 0",color:"var(--muted)"}},
+      "Si lo activas, la app te avisará en la ficha de una clienta cuando lleve esos meses seguidos viniendo, para que decidas si le das el premio.")
+  ));
 
   const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0 0 10px"}});
   sheet.appendChild(err);
@@ -1222,6 +1289,10 @@ function openConfiguracionNegocio(forzado){
     state.servicios = normServicios(serviciosSel);
     state.logo = logoData;
     state.piePersonalizado = pieInput.value.trim();
+    state.fidelidadActiva = fidelidadOn;
+    const mv = parseInt(fidMesesInput.value,10);
+    state.fidelidadMeses = (Number.isFinite(mv) && mv>=2) ? mv : 5;
+    state.fidelidadPremio = fidPremioInput.value.trim() || "un diseño gratis";
     state.configurado = true;
     save();
     aplicarTema(temaSel);
@@ -1344,9 +1415,12 @@ function openSettings(){
   const nombreInput = el("input",{class:"field",placeholder:"Servicio…",style:{flex:"1",minWidth:"0",fontSize:"14px"}});
   const precioInput = el("input",{class:"field",inputmode:"decimal",placeholder:"€",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
   const duracionInput = el("input",{class:"field",inputmode:"numeric",placeholder:"min",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
+  const servErr = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0 0 8px",minHeight:"0"}});
   function añadir(){
     const n = nombreInput.value.trim();
-    if(!n || state.servicios.some(s=>s.nombre===n)){ nombreInput.value=""; precioInput.value=""; duracionInput.value=""; return; }
+    if(!n){ servErr.textContent="Escribe el nombre del servicio."; return; }
+    if(state.servicios.some(s=>normTxt(s.nombre)===normTxt(n))){ servErr.textContent="Ya tienes un servicio con ese nombre."; return; }
+    servErr.textContent="";
     const pv = precioInput.value.trim().replace(",",".");
     const p = pv==="" ? null : Number(pv);
     const dv = parseInt(duracionInput.value,10);
@@ -1357,11 +1431,12 @@ function openSettings(){
   nombreInput.addEventListener("keydown",e=>{ if(e.key==="Enter") añadir(); });
   precioInput.addEventListener("keydown",e=>{ if(e.key==="Enter") añadir(); });
   duracionInput.addEventListener("keydown",e=>{ if(e.key==="Enter") añadir(); });
-  sheet.appendChild(el("div",{style:{display:"flex",gap:"8px",marginBottom:"12px"}},
+  sheet.appendChild(el("div",{style:{display:"flex",gap:"8px",marginBottom:"8px"}},
     nombreInput, precioInput, duracionInput,
     el("button",{class:"primary","aria-label":"Añadir servicio",style:{height:"44px",width:"44px",display:"grid",placeItems:"center",flexShrink:"0"},
       onClick:añadir}, icon("plus",18))
   ));
+  sheet.appendChild(servErr);
 
   const servList = el("div",{style:{display:"flex",flexDirection:"column",gap:"6px",maxHeight:"240px",overflowY:"auto"}});
   state.servicios.forEach(s=>{
@@ -1596,6 +1671,17 @@ function openClienteForm(cliente, opts){
         el("span",{style:{color:"var(--muted)",flexShrink:"0"}},"Servicios habituales"),
         el("span",{style:{textAlign:"right"}}, h.topServicios.join(", "))) : null
     ));
+
+    const premio = premioFidelidad(cliente.nombre);
+    if(premio){
+      sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",gap:"10px",padding:"12px 14px",marginBottom:"18px",
+        borderRadius:"12px",background:"var(--accentSoft)",border:"1px solid var(--accent)"}},
+        el("span",{style:{color:"var(--accent)",flexShrink:"0"}}, icon("check",18)),
+        el("span",{style:{fontSize:"13px",lineHeight:"1.35",color:"var(--ink)"}},
+          el("strong",{},"¡Clienta fiel! "),
+          "Lleva "+premio.racha+" meses seguidos viniendo. Puedes ofrecerle "+state.fidelidadPremio+".")
+      ));
+    }
   }
 
   const nombreInput = el("input",{class:"field",placeholder:"Nombre de la clienta"});
@@ -2008,6 +2094,9 @@ $("#fileInput").addEventListener("change", function(e){
         horarios: Array.isArray(p.horarios) && p.horarios.length ? p.horarios : state.horarios,
         logo: typeof p.logo==="string" ? p.logo : state.logo,
         piePersonalizado: typeof p.piePersonalizado==="string" ? p.piePersonalizado : state.piePersonalizado,
+        fidelidadActiva: typeof p.fidelidadActiva==="boolean" ? p.fidelidadActiva : state.fidelidadActiva,
+        fidelidadMeses: (typeof p.fidelidadMeses==="number" && p.fidelidadMeses>=2) ? p.fidelidadMeses : state.fidelidadMeses,
+        fidelidadPremio: typeof p.fidelidadPremio==="string" && p.fidelidadPremio.trim() ? p.fidelidadPremio : state.fidelidadPremio,
         configurado: true,
       };
       aplicarTema(state.tema);
