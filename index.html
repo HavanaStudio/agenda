@@ -60,6 +60,10 @@
        transform:translateX(-50%);height:56px;padding:0 24px;border-radius:9999px;
        display:flex;align-items:center;gap:8px;background:var(--accent);color:#fff;
        font-weight:500;box-shadow:0 8px 24px rgba(156,107,94,.4);z-index:40;}
+  .fab-backup{position:fixed;bottom:calc(22px + env(safe-area-inset-bottom));right:18px;
+       height:46px;width:46px;border-radius:9999px;display:flex;align-items:center;justify-content:center;
+       background:var(--ink);color:#fff;
+       box-shadow:0 4px 14px rgba(0,0,0,.28);z-index:40;}
   .tabnum{font-variant-numeric:tabular-nums;}
   .truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 </style>
@@ -74,6 +78,9 @@
 const STORAGE_KEY = "agenda_data";
 const AVISO_KEY = "agenda_aviso_descartado";
 const DIAS_AVISO = 7;
+const PIN_HASH_KEY = "agenda_pin_hash";
+const PIN_ENABLED_KEY = "agenda_pin_enabled";
+const PIN_SESSION_KEY = "agenda_pin_desbloqueado";
 const SERVICIOS_DEFAULT = [
   { nombre:"Manicura completa", precio:25, duracion:60 },
   { nombre:"Pedicura completa", precio:null, duracion:60 },
@@ -83,6 +90,35 @@ const SERVICIOS_DEFAULT = [
   { nombre:"Diseños", precio:null, duracion:15 },
 ];
 const PAGO_LABELS = { efectivo:"Efectivo", tarjeta:"Tarjeta", bizum:"Bizum" };
+
+const HORARIOS_DEFAULT = ["09:00","11:30","14:00","16:00","18:00"];
+const TEMAS = {
+  rosado:    { nombre:"Rosado",       bg:"#F3EEE9", paper:"#FBF8F4", ink:"#2B2622", muted:"#8A817A", accent:"#9C6B5E", accentSoft:"#EFE4DF", line:"#E5DBD3", danger:"#B4423A" },
+  salvia:    { nombre:"Verde salvia", bg:"#EFF3EC", paper:"#FAFBF8", ink:"#26312A", muted:"#7E8C82", accent:"#5C7A5E", accentSoft:"#E1EAE0", line:"#DCE5D8", danger:"#B4423A" },
+  piedra:    { nombre:"Azul piedra",  bg:"#EDF1F3", paper:"#F8FAFB", ink:"#222B30", muted:"#7A8A91", accent:"#4F7686", accentSoft:"#DCE7EA", line:"#D7E1E4", danger:"#B4423A" },
+  terracota: { nombre:"Terracota",    bg:"#F5ECE6", paper:"#FDF8F5", ink:"#332019", muted:"#9C7F71", accent:"#B5602F", accentSoft:"#F1DDCB", line:"#EAD9CC", danger:"#B4423A" },
+  lavanda:   { nombre:"Lavanda",      bg:"#F1EEF5", paper:"#FAF8FC", ink:"#2A2632", muted:"#857E92", accent:"#7C6A9C", accentSoft:"#E6E1EF", line:"#E0DAE9", danger:"#B4423A" },
+};
+function aplicarTema(temaKey){
+  const t = TEMAS[temaKey] || TEMAS.rosado;
+  const root = document.documentElement.style;
+  root.setProperty("--bg", t.bg);
+  root.setProperty("--paper", t.paper);
+  root.setProperty("--ink", t.ink);
+  root.setProperty("--muted", t.muted);
+  root.setProperty("--accent", t.accent);
+  root.setProperty("--accentSoft", t.accentSoft);
+  root.setProperty("--line", t.line);
+  root.setProperty("--danger", t.danger);
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if(metaTheme) metaTheme.setAttribute("content", t.bg);
+}
+function aplicarNombreNegocio(nombre){
+  const n = nombre || "Agenda";
+  document.title = n;
+  const metaTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+  if(metaTitle) metaTitle.setAttribute("content", n);
+}
 
 /* ============ iconos ============ */
 const PATHS = {
@@ -183,7 +219,8 @@ function normGastos(gastos){
 }
 
 /* ============ estado ============ */
-let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true, clientes:{}, gastos:[], ultimoBackup:null, vacaciones:[] };
+let state = { citas:{}, servicios:SERVICIOS_DEFAULT, incluirSabado:true, clientes:{}, gastos:[], ultimoBackup:null, vacaciones:[],
+  negocio:"Mi negocio", tema:"rosado", horarios:HORARIOS_DEFAULT.slice(), configurado:false, logo:null, piePersonalizado:"" };
 let selectedKey = toKey(new Date());
 
 function load(){
@@ -200,9 +237,17 @@ function load(){
         gastos: normGastos(p.gastos),
         ultimoBackup: typeof p.ultimoBackup==="string" ? p.ultimoBackup : null,
         vacaciones: Array.isArray(p.vacaciones) ? p.vacaciones.filter(x=>typeof x==="string") : [],
+        negocio: typeof p.negocio==="string" && p.negocio.trim() ? p.negocio : "Agenda",
+        tema: TEMAS[p.tema] ? p.tema : "rosado",
+        horarios: Array.isArray(p.horarios) && p.horarios.length ? p.horarios : HORARIOS_DEFAULT.slice(),
+        logo: typeof p.logo==="string" ? p.logo : null,
+        piePersonalizado: typeof p.piePersonalizado==="string" ? p.piePersonalizado : "",
+        configurado: true, // ya había datos guardados de antes: no forzar el asistente
       };
     }
   }catch(e){}
+  aplicarTema(state.tema);
+  aplicarNombreNegocio(state.configurado ? state.negocio : null);
 }
 function save(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -211,6 +256,56 @@ function save(){
 
 function precioDe(nombre){ const s=state.servicios.find(x=>x.nombre===nombre); return s && typeof s.precio==="number"? s.precio : 0; }
 function totalCita(c){ return (c.servicios||[]).reduce((t,n)=>t+precioDe(n),0); }
+function historialCliente(nombre){
+  let totalCitas=0, totalGastado=0, ultimaFecha=null;
+  const conteoServicios = {};
+  Object.keys(state.citas).sort().forEach(k=>{
+    state.citas[k].forEach(c=>{
+      if(c.clienta!==nombre) return;
+      totalCitas++;
+      if(c.pago) totalGastado += totalCita(c) + (c.propina||0);
+      if(!ultimaFecha || k>ultimaFecha) ultimaFecha = k;
+      (c.servicios||[]).forEach(s=>{ conteoServicios[s]=(conteoServicios[s]||0)+1; });
+    });
+  });
+  const topServicios = Object.entries(conteoServicios).sort((a,b)=>b[1]-a[1]).slice(0,3).map(e=>e[0]);
+  return { totalCitas, totalGastado, ultimaFecha, topServicios };
+}
+const DIAS_SEMANA_NOMBRE = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+function estadisticasMes(refDate){
+  let totalCitasMes = 0, totalIngreso = 0, citasCobradas = 0;
+  const porDia = {}, conteoServ = {};
+  for(const k in state.citas){
+    const d = fromKey(k);
+    if(d.getFullYear()!==refDate.getFullYear() || d.getMonth()!==refDate.getMonth()) continue;
+    state.citas[k].forEach(c=>{
+      totalCitasMes++;
+      porDia[d.getDay()] = (porDia[d.getDay()]||0)+1;
+      (c.servicios||[]).forEach(s=>{ conteoServ[s]=(conteoServ[s]||0)+1; });
+      if(c.pago){ totalIngreso += totalCita(c); citasCobradas++; }
+    });
+  }
+  const servicioTopEntry = Object.entries(conteoServ).sort((a,b)=>b[1]-a[1])[0];
+  const diaTopEntry = Object.entries(porDia).sort((a,b)=>b[1]-a[1])[0];
+  return {
+    totalCitasMes,
+    servicioTop: servicioTopEntry ? servicioTopEntry[0] : "—",
+    diaTop: diaTopEntry ? DIAS_SEMANA_NOMBRE[Number(diaTopEntry[0])] : "—",
+    ticketMedio: citasCobradas ? totalIngreso/citasCobradas : 0,
+    ingresoMedioPorCita: totalCitasMes ? totalIngreso/totalCitasMes : 0,
+  };
+}
+function clientasInactivas(){
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const out = [];
+  Object.keys(state.clientes).forEach(nombre=>{
+    const h = historialCliente(nombre);
+    if(!h.ultimaFecha) return;
+    const dias = Math.floor((hoy - fromKey(h.ultimaFecha)) / 86400000);
+    if(dias>=30) out.push({ nombre, dias, telefono: state.clientes[nombre] });
+  });
+  return out.sort((a,b)=>b.dias-a.dias);
+}
 function duracionDe(nombre){ const s=state.servicios.find(x=>x.nombre===nombre); return (s && typeof s.duracion==="number" && s.duracion>0) ? s.duracion : 60; }
 function duracionCita(c){ return (c.servicios||[]).reduce((t,n)=>t+duracionDe(n),0) || 60; }
 function horaAMinutos(hora){
@@ -223,7 +318,7 @@ function slotsOcupados(dateKey, excluirId){
     if(excluirId && c.id===excluirId) return;
     const inicio = horaAMinutos(c.hora);
     const fin = inicio + duracionCita(c);
-    HORARIOS_TRABAJO.forEach(h=>{
+    state.horarios.forEach(h=>{
       const m = horaAMinutos(h);
       if(m>=inicio && m<fin) ocupados[h]=true;
     });
@@ -279,7 +374,6 @@ function diasDesdeBackup(){
   return Math.floor(ms / 86400000);
 }
 
-const HORARIOS_TRABAJO = ["09:00","11:30","14:00","16:00","18:00"];
 function formatHora12(hora24){
   if(!hora24) return "—";
   const partes = hora24.split(":");
@@ -304,7 +398,7 @@ function diasDisponibles(viewMonth){
     const k = toKey(d);
     if(esVacacion(k)) continue;
     const ocupadas = slotsOcupados(k);
-    const libres = HORARIOS_TRABAJO.filter(h=>!ocupadas[h]).map(h=>({hora:h, label:formatHora12(h)}));
+    const libres = state.horarios.filter(h=>!ocupadas[h]).map(h=>({hora:h, label:formatHora12(h)}));
     if(libres.length) out.push({ fecha:d, dateKey:k, libres });
   }
   return out;
@@ -322,18 +416,31 @@ async function generarImagenDisponibilidad(viewMonth, dias){
   if(document.fonts && document.fonts.ready){ try{ await document.fonts.ready; }catch(e){} }
 
   const W = 720, PAD = 56;
-  const COL = { bg:"#F3EEE9", ink:"#2B2622", muted:"#8A817A", accent:"#9C6B5E", accentSoft:"#EFE4DF", line:"#E5DBD3" };
+  const t = TEMAS[state.tema] || TEMAS.rosado;
+  const COL = { bg:t.bg, ink:t.ink, muted:t.muted, accent:t.accent, accentSoft:t.accentSoft, line:t.line };
   const F_TITULO = "600 32px Fraunces, Georgia, serif";
+  const F_NEGOCIO = "600 18px Inter, system-ui, sans-serif";
   const F_SUB = "500 17px Inter, system-ui, sans-serif";
   const F_FECHA = "600 16px Inter, system-ui, sans-serif";
   const F_CHIP = "600 14px Inter, system-ui, sans-serif";
   const F_VACIO = "400 15px Inter, system-ui, sans-serif";
   const F_FOOT = "italic 12px Inter, system-ui, sans-serif";
 
+  // precargar el logo si existe
+  let logoImg = null;
+  if(state.logo){
+    try{
+      logoImg = await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=state.logo; });
+    }catch(e){ logoImg = null; }
+  }
+
   const tmp = document.createElement("canvas").getContext("2d");
 
+  const tieneNombre = state.negocio && state.negocio!=="Agenda";
+  const topOffset = (tieneNombre || logoImg) ? 34 : 0; // espacio extra arriba para logo/nombre
+
   const bloques = [];
-  let y = PAD + 78; // título + subtítulo + línea
+  let y = PAD + 78 + topOffset;
 
   if(dias.length===0){
     bloques.push({ tipo:"vacio", y });
@@ -359,6 +466,7 @@ async function generarImagenDisponibilidad(viewMonth, dias){
 
   bloques.push({ tipo:"footer", y });
   y += 26;
+  if(state.piePersonalizado) y += 20;
   const H = y + PAD - 10;
 
   const canvas = document.createElement("canvas");
@@ -367,16 +475,29 @@ async function generarImagenDisponibilidad(viewMonth, dias){
   ctx.fillStyle = COL.bg; ctx.fillRect(0,0,W,H);
   ctx.textBaseline = "alphabetic";
 
+  // logo + nombre del negocio
+  let titleY = PAD+32;
+  if(logoImg){
+    const size = 44;
+    roundRect(ctx, PAD, PAD-6, size, size, 10); ctx.save(); ctx.clip();
+    ctx.drawImage(logoImg, PAD, PAD-6, size, size); ctx.restore();
+  }
+  if(tieneNombre){
+    ctx.fillStyle = COL.accent; ctx.font = F_NEGOCIO;
+    ctx.fillText(state.negocio, logoImg ? PAD+58 : PAD, PAD+22);
+    titleY = PAD+32+topOffset;
+  }
+
   ctx.fillStyle = COL.ink;
   ctx.font = F_TITULO;
-  ctx.fillText("Disponibilidad", PAD, PAD+32);
+  ctx.fillText("Disponibilidad", PAD, titleY);
 
   ctx.fillStyle = COL.accent;
   ctx.font = F_SUB;
-  ctx.fillText(cap(fmtMes(viewMonth)), PAD, PAD+60);
+  ctx.fillText(cap(fmtMes(viewMonth)), PAD, titleY+28);
 
   ctx.strokeStyle = COL.line; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(PAD, PAD+78); ctx.lineTo(W-PAD, PAD+78); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(PAD, titleY+46); ctx.lineTo(W-PAD, titleY+46); ctx.stroke();
 
   bloques.forEach(b=>{
     if(b.tipo==="vacio"){
@@ -405,6 +526,10 @@ async function generarImagenDisponibilidad(viewMonth, dias){
       ctx.fillStyle = COL.muted; ctx.font = F_FOOT;
       const ahora = new Date();
       ctx.fillText("Actualizado el "+toKey(ahora)+" · "+pad(ahora.getHours())+":"+pad(ahora.getMinutes())+" h", PAD, b.y+22);
+      if(state.piePersonalizado){
+        ctx.fillStyle = COL.accent; ctx.font = "600 13px Inter, system-ui, sans-serif";
+        ctx.fillText(state.piePersonalizado, PAD, b.y+42);
+      }
     }
   });
 
@@ -435,6 +560,102 @@ function toast(msg){
   toastTimer = setTimeout(()=>t.remove(), 2200);
 }
 
+/* ============ PIN de acceso ============ */
+async function hashPin(pin){
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+function pinActivo(){ return localStorage.getItem(PIN_ENABLED_KEY)==="1" && !!localStorage.getItem(PIN_HASH_KEY); }
+async function guardarPin(pin){
+  localStorage.setItem(PIN_HASH_KEY, await hashPin(pin));
+  localStorage.setItem(PIN_ENABLED_KEY, "1");
+  localStorage.setItem("agenda_pin_len", String(pin.length));
+}
+function quitarPin(){
+  localStorage.removeItem(PIN_HASH_KEY);
+  localStorage.removeItem(PIN_ENABLED_KEY);
+  sessionStorage.removeItem(PIN_SESSION_KEY);
+}
+async function pinCorrecto(pin){
+  const guardado = localStorage.getItem(PIN_HASH_KEY);
+  if(!guardado) return false;
+  return (await hashPin(pin)) === guardado;
+}
+function longitudPinGuardado(){
+  const n = parseInt(localStorage.getItem("agenda_pin_len"),10);
+  return (n===4||n===6) ? n : 4;
+}
+
+function mostrarPantallaBloqueo(onUnlock){
+  const overlay = el("div",{style:{position:"fixed",inset:"0",zIndex:"200",background:"var(--bg)",
+    display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"24px"}});
+
+  let intento = "";
+  const largo = longitudPinGuardado();
+
+  overlay.appendChild(el("p",{class:"serif",style:{fontSize:"20px",margin:"0 0 6px"}}, "Introduce tu PIN"));
+  const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",minHeight:"16px",margin:"0 0 16px"}});
+  overlay.appendChild(err);
+
+  const dots = el("div",{style:{display:"flex",gap:"14px",marginBottom:"28px"}});
+  function renderDots(){
+    dots.innerHTML="";
+    for(let i=0;i<largo;i++){
+      dots.appendChild(el("span",{style:{height:"14px",width:"14px",borderRadius:"9999px",
+        background: i<intento.length ? "var(--accent)" : "transparent",
+        border:"1px solid var(--accent)"}}));
+    }
+  }
+  renderDots();
+  overlay.appendChild(dots);
+
+  async function intentar(){
+    if(await pinCorrecto(intento)){
+      sessionStorage.setItem(PIN_SESSION_KEY,"1");
+      overlay.remove();
+      onUnlock();
+    } else {
+      err.textContent = "PIN incorrecto";
+      intento = "";
+      renderDots();
+    }
+  }
+  function pulsar(n){
+    if(intento.length>=largo) return;
+    intento += n;
+    err.textContent="";
+    renderDots();
+    if(intento.length===largo) intentar();
+  }
+
+  const pad = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,72px)",gap:"16px",justifyContent:"center"}});
+  ["1","2","3","4","5","6","7","8","9","","0","←"].forEach(k=>{
+    if(k===""){ pad.appendChild(el("span",{})); return; }
+    pad.appendChild(el("button",{type:"button",
+      style:{height:"72px",width:"72px",borderRadius:"9999px",fontSize:"22px",fontWeight:"500",
+        background:"var(--paper)",border:"1px solid var(--line)",color:"var(--ink)"},
+      onClick:()=>{
+        if(k==="←"){ intento = intento.slice(0,-1); err.textContent=""; renderDots(); return; }
+        pulsar(k);
+      }
+    }, k));
+  });
+  overlay.appendChild(pad);
+
+  overlay.appendChild(el("button",{style:{marginTop:"26px",fontSize:"12px",color:"var(--muted)",textDecoration:"underline"},
+    onClick:()=>{
+      if(confirm("Esto va a quitar el PIN para que puedas volver a entrar. Tendrás que configurarlo de nuevo si quieres. ¿Seguro?")){
+        quitarPin();
+        overlay.remove();
+        onUnlock();
+        toast("PIN eliminado");
+      }
+    }
+  }, "¿Olvidaste tu PIN?"));
+
+  document.body.appendChild(overlay);
+}
+
 /* ============ vista principal ============ */
 function render(){
   const app = $("#app");
@@ -456,7 +677,7 @@ function buildAvisoBackup(){
       marginBottom:"14px",background:"#FBF3E7"}},
     el("span",{style:{color:"var(--accent)",flexShrink:"0"}}, icon("download",18)),
     el("span",{style:{flex:"1",fontSize:"13px",lineHeight:"1.3"}}, mensaje),
-    el("button",{class:"chip",style:{flexShrink:"0"}, onClick:exportar}, "Exportar"),
+    el("button",{class:"chip",style:{flexShrink:"0"}, onClick:exportar}, "Guardar copia"),
     el("button",{"aria-label":"Cerrar aviso",style:{color:"var(--muted)",flexShrink:"0",padding:"2px"},
       onClick:()=>{ localStorage.setItem(AVISO_KEY, hoyKey); render(); }}, icon("x",16))
   );
@@ -468,7 +689,7 @@ function buildMain(){
   // cabecera
   const header = el("header",{style:{display:"flex",alignItems:"flex-end",justifyContent:"space-between",marginBottom:"18px"}});
   const titleBox = el("div",{},
-    el("h1",{class:"serif",style:{fontSize:"30px",lineHeight:"1",letterSpacing:"-.5px",margin:"0"}},"Agenda"),
+    el("h1",{class:"serif",style:{fontSize:"30px",lineHeight:"1",letterSpacing:"-.5px",margin:"0"}}, state.negocio||"Agenda"),
     el("p",{style:{fontSize:"12px",margin:"4px 0 0",color:"var(--muted)"}},"Copia de seguridad de tus citas")
   );
   const headBtns = el("div",{style:{display:"flex",gap:"8px"}},
@@ -589,6 +810,8 @@ function buildMain(){
   // botón flotante
   const fab = el("button",{class:"fab", onClick:()=>openCita(selectedKey,null)}, icon("plus",20), "Añadir cita");
   wrap.appendChild(fab);
+  const fabBackup = el("button",{class:"fab-backup","aria-label":"Hacer copia de seguridad ahora", onClick:exportar}, icon("download",18));
+  wrap.appendChild(fabBackup);
 
   return wrap;
 }
@@ -616,12 +839,12 @@ function openCita(dateKey, cita, draft){
   sheet.appendChild(head);
   sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 16px",color:"var(--muted)"}}, cap(fmtDiaLargo(fromKey(dateKey)))));
 
-  let horaSel = initial.hora || HORARIOS_TRABAJO[0];
+  let horaSel = initial.hora || state.horarios[0];
   const horaChips = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
   function renderHoraChips(){
     horaChips.innerHTML = "";
     const ocupados = slotsOcupados(dateKey, cita && cita.id);
-    const opciones = HORARIOS_TRABAJO.slice();
+    const opciones = state.horarios.slice();
     if(horaSel && opciones.indexOf(horaSel)<0) opciones.push(horaSel); // conserva una hora antigua que ya no esté en la lista
     opciones.forEach(h=>{
       const on = horaSel===h;
@@ -819,6 +1042,247 @@ function openCita(dateKey, cita, draft){
 }
 
 /* ============ modal ajustes ============ */
+/* ============ configuración del negocio (nombre, color, horarios) ============ */
+function openConfiguracionNegocio(forzado){
+  closeOverlays();
+  const temaOriginal = state.tema;
+  function cancelar(){ aplicarTema(temaOriginal); closeOverlays(); }
+
+  const overlay = el("div",{class:"overlay"});
+  if(!forzado) overlay.addEventListener("click", cancelar);
+  const sheet = el("div",{class:"sheet", onClick:(e)=>e.stopPropagation()});
+  overlay.appendChild(sheet);
+
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}}, forzado ? "Bienvenida" : "Configurar negocio"),
+    forzado ? el("span",{}) : el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:cancelar}, icon("x",20))
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 18px",color:"var(--muted)"}},
+    forzado ? "Vamos a dejar la app lista en un minuto. Solo se hace una vez." : "Cambia el nombre, los colores, los horarios o tus servicios cuando quieras."));
+
+  // nombre
+  const nombreInput = el("input",{class:"field",placeholder:"Ej. Kukys Nails"});
+  nombreInput.value = (state.configurado ? state.negocio : "") || "";
+  sheet.appendChild(el("div",{style:{marginBottom:"18px"}}, el("label",{class:"label"},"Nombre del negocio"), nombreInput));
+
+  // logo
+  let logoData = state.logo || null;
+  const logoPreview = el("div",{style:{height:"56px",width:"56px",borderRadius:"12px",flexShrink:"0",
+    border:"1px solid var(--line)",background:"var(--paper)",display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}});
+  function renderLogo(){
+    logoPreview.innerHTML = "";
+    if(logoData) logoPreview.appendChild(el("img",{src:logoData,style:{width:"100%",height:"100%",objectFit:"cover"}}));
+    else logoPreview.appendChild(el("span",{style:{color:"var(--muted)"}}, icon("users",20)));
+  }
+  renderLogo();
+  const logoFile = el("input",{type:"file",accept:"image/*",style:{display:"none"}});
+  logoFile.addEventListener("change", (e)=>{
+    const f = e.target.files && e.target.files[0];
+    if(!f) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=>{
+        // reescalar a máx 256px para no inflar el almacenamiento
+        const max=256; let w=img.width,h=img.height;
+        if(w>h && w>max){ h=h*max/w; w=max; } else if(h>max){ w=w*max/h; h=max; }
+        const c=document.createElement("canvas"); c.width=w; c.height=h;
+        c.getContext("2d").drawImage(img,0,0,w,h);
+        logoData = c.toDataURL("image/png");
+        renderLogo();
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(f);
+    e.target.value="";
+  });
+  sheet.appendChild(el("div",{style:{marginBottom:"18px"}},
+    el("label",{class:"label"},"Logo (opcional)"),
+    el("div",{style:{display:"flex",alignItems:"center",gap:"12px"}},
+      logoPreview,
+      el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap"}},
+        el("button",{type:"button",class:"chip", onClick:()=>logoFile.click()}, icon("upload",14), "Subir"),
+        el("button",{type:"button",class:"chip", onClick:()=>{ logoData=null; renderLogo(); }}, "Quitar")
+      )
+    ),
+    logoFile
+  ));
+
+  // color
+  let temaSel = state.tema || "rosado";
+  const temaWrap = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"10px"}});
+  function renderTemas(){
+    temaWrap.innerHTML = "";
+    Object.keys(TEMAS).forEach(key=>{
+      const t = TEMAS[key];
+      const on = temaSel===key;
+      temaWrap.appendChild(el("button",{type:"button",
+        style:{display:"flex",alignItems:"center",gap:"8px",padding:"8px 14px",borderRadius:"9999px",
+          border:"1px solid "+(on?t.accent:t.line), background:t.paper, color:t.ink, fontSize:"13px",fontWeight: on?"600":"400"},
+        onClick:()=>{ temaSel=key; renderTemas(); aplicarTema(key); }
+      },
+        el("span",{style:{height:"16px",width:"16px",borderRadius:"9999px",background:t.accent,display:"inline-block",flexShrink:"0"}}),
+        t.nombre
+      ));
+    });
+  }
+  renderTemas();
+  sheet.appendChild(el("div",{style:{marginBottom:"18px"}}, el("label",{class:"label"},"Color"), temaWrap));
+
+  // horarios
+  let horariosSel = (state.horarios && state.horarios.length ? state.horarios : HORARIOS_DEFAULT).slice();
+  const horaNuevaInput = el("input",{class:"field",type:"time",style:{width:"120px"}});
+  const horariosWrap = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px"}});
+  function renderHorariosCfg(){
+    horariosWrap.innerHTML = "";
+    horariosSel.slice().sort().forEach(h=>{
+      horariosWrap.appendChild(el("span",{class:"chip chip-on"},
+        formatHora12(h),
+        el("button",{type:"button","aria-label":"Quitar "+h, style:{marginLeft:"2px",display:"flex",color:"#fff"},
+          onClick:()=>{ horariosSel = horariosSel.filter(x=>x!==h); renderHorariosCfg(); }}, icon("x",12))
+      ));
+    });
+  }
+  renderHorariosCfg();
+  function añadirHorario(){
+    const v = horaNuevaInput.value;
+    if(v && horariosSel.indexOf(v)<0){ horariosSel.push(v); renderHorariosCfg(); }
+    horaNuevaInput.value = "";
+  }
+  horaNuevaInput.addEventListener("keydown", e=>{ if(e.key==="Enter") añadirHorario(); });
+  sheet.appendChild(el("div",{style:{marginBottom:"6px"}},
+    el("label",{class:"label"},"Horarios fijos de trabajo"),
+    horariosWrap,
+    el("div",{style:{display:"flex",gap:"8px",marginTop:"10px"}},
+      horaNuevaInput,
+      el("button",{class:"primary","aria-label":"Añadir horario",style:{height:"40px",width:"40px",display:"grid",placeItems:"center",flexShrink:"0"},
+        onClick:añadirHorario}, icon("plus",16))
+    )
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"11px",margin:"0 0 18px",color:"var(--muted)"}},
+    "Los únicos horarios que se podrán elegir al crear una cita, y los que se comparten en Disponibilidad."));
+
+  // servicios y precios
+  let serviciosSel = state.servicios.map(s=>Object.assign({},s));
+  const servWrap = el("div",{style:{display:"flex",flexDirection:"column",gap:"6px"}});
+  function renderServiciosCfg(){
+    servWrap.innerHTML = "";
+    serviciosSel.forEach((s,idx)=>{
+      servWrap.appendChild(el("div",{style:{display:"flex",alignItems:"center",gap:"6px",background:"#fff",border:"1px solid var(--line)",borderRadius:"12px",padding:"8px 12px"}},
+        el("span",{class:"truncate",style:{flex:"1",minWidth:"0",fontSize:"14px"}}, s.nombre),
+        el("span",{class:"tabnum",style:{fontSize:"13px",color:"var(--muted)"}}, (typeof s.precio==="number"? eur(s.precio):"—")),
+        el("button",{type:"button","aria-label":"Quitar "+s.nombre,style:{padding:"4px",color:"var(--muted)"},
+          onClick:()=>{ serviciosSel.splice(idx,1); renderServiciosCfg(); }}, icon("x",16))
+      ));
+    });
+  }
+  renderServiciosCfg();
+  const servNombre = el("input",{class:"field",placeholder:"Servicio…",style:{flex:"1",minWidth:"0",fontSize:"14px"}});
+  const servPrecio = el("input",{class:"field",inputmode:"decimal",placeholder:"€",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
+  const servDur = el("input",{class:"field",inputmode:"numeric",placeholder:"min",style:{width:"56px",textAlign:"center",fontSize:"14px"}});
+  function añadirServicio(){
+    const n = servNombre.value.trim();
+    if(!n || serviciosSel.some(x=>x.nombre===n)){ servNombre.value=""; servPrecio.value=""; servDur.value=""; return; }
+    const pv = servPrecio.value.trim().replace(",","."); const p = pv===""?null:Number(pv);
+    const dv = parseInt(servDur.value,10); const d = Number.isFinite(dv)&&dv>0?dv:60;
+    serviciosSel.push({nombre:n, precio:Number.isFinite(p)?p:null, duracion:d});
+    servNombre.value=""; servPrecio.value=""; servDur.value="";
+    renderServiciosCfg();
+  }
+  servNombre.addEventListener("keydown",e=>{ if(e.key==="Enter") añadirServicio(); });
+  sheet.appendChild(el("div",{style:{marginBottom:"6px"}},
+    el("label",{class:"label"},"Servicios y precios"),
+    servWrap,
+    el("div",{style:{display:"flex",gap:"8px",marginTop:"10px"}},
+      servNombre, servPrecio, servDur,
+      el("button",{class:"primary","aria-label":"Añadir servicio",style:{height:"40px",width:"40px",display:"grid",placeItems:"center",flexShrink:"0"},
+        onClick:añadirServicio}, icon("plus",16))
+    )
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"11px",margin:"0 0 18px",color:"var(--muted)"}},
+    "El precio y los minutos son opcionales, pero los minutos ayudan a calcular los huecos libres."));
+
+  // pie personalizado
+  const pieInput = el("input",{class:"field",placeholder:"Ej. WhatsApp: 644 000 000"});
+  pieInput.value = state.piePersonalizado || "";
+  sheet.appendChild(el("div",{style:{marginBottom:"18px"}},
+    el("label",{class:"label"},"Pie para la imagen de disponibilidad (opcional)"), pieInput));
+
+  const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0 0 10px"}});
+  sheet.appendChild(err);
+
+  function guardar(){
+    const nombre = nombreInput.value.trim();
+    if(!nombre){ err.textContent="Escribe el nombre del negocio."; return; }
+    if(horariosSel.length===0){ err.textContent="Añade al menos un horario."; return; }
+    if(serviciosSel.length===0){ err.textContent="Añade al menos un servicio."; return; }
+    state.negocio = nombre;
+    state.tema = temaSel;
+    state.horarios = horariosSel.slice().sort();
+    state.servicios = normServicios(serviciosSel);
+    state.logo = logoData;
+    state.piePersonalizado = pieInput.value.trim();
+    state.configurado = true;
+    save();
+    aplicarTema(temaSel);
+    aplicarNombreNegocio(nombre);
+    closeOverlays();
+    render();
+    toast(forzado ? "Todo listo. ¡A trabajar!" : "Configuración guardada");
+  }
+  sheet.appendChild(el("button",{class:"primary",style:{width:"100%",height:"48px"}, onClick:guardar},
+    forzado ? "Guardar y empezar" : "Guardar"));
+
+  document.body.appendChild(overlay);
+}
+
+/* ============ crear / cambiar PIN ============ */
+function openConfigurarPin(){
+  closeOverlays();
+  const { overlay, sheet } = buildSheet();
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}}, pinActivo() ? "Cambiar PIN" : "Crear PIN"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:closeOverlays}, icon("x",20))
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 16px",color:"var(--muted)"}},
+    "Te lo pedirá cada vez que abras la app. Si lo olvidas, solo se puede borrar y crear uno nuevo — no hay forma de recuperarlo."));
+
+  let largo = 4;
+  const largoWrap = el("div",{style:{display:"flex",gap:"8px",marginBottom:"16px"}});
+  function renderLargo(){
+    largoWrap.innerHTML="";
+    [4,6].forEach(n=>{
+      const on = largo===n;
+      largoWrap.appendChild(el("button",{type:"button",class:"chip"+(on?" chip-on":""), onClick:()=>{ largo=n; renderLargo(); }}, n+" dígitos"));
+    });
+  }
+  renderLargo();
+  sheet.appendChild(el("div",{style:{marginBottom:"16px"}}, el("label",{class:"label"},"Longitud"), largoWrap));
+
+  const p1 = el("input",{class:"field",type:"password",inputmode:"numeric",maxlength:"6",placeholder:"Nuevo PIN"});
+  const p2 = el("input",{class:"field",type:"password",inputmode:"numeric",maxlength:"6",placeholder:"Repite el PIN"});
+  const err = el("p",{style:{fontSize:"12px",color:"var(--danger)",margin:"0"}});
+  sheet.appendChild(el("div",{style:{display:"flex",flexDirection:"column",gap:"12px"}},
+    el("div",{}, el("label",{class:"label"},"PIN"), p1),
+    el("div",{}, el("label",{class:"label"},"Repite el PIN"), p2),
+    err
+  ));
+
+  function guardar(){
+    const a = p1.value.trim(), b = p2.value.trim();
+    if(a.length!==largo || !/^\d+$/.test(a)){ err.textContent="El PIN debe tener exactamente "+largo+" números."; return; }
+    if(a!==b){ err.textContent="Los dos PIN no coinciden."; return; }
+    guardarPin(a).then(()=>{
+      sessionStorage.setItem(PIN_SESSION_KEY,"1");
+      closeOverlays(); toast("PIN activado"); render();
+    });
+  }
+  sheet.appendChild(el("button",{class:"primary",style:{width:"100%",height:"48px",marginTop:"18px"}, onClick:guardar},
+    pinActivo() ? "Cambiar PIN" : "Activar PIN"));
+
+  document.body.appendChild(overlay);
+}
+
 function openSettings(){
   closeOverlays();
   const { overlay, sheet } = buildSheet();
@@ -828,15 +1292,36 @@ function openSettings(){
     el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:closeOverlays}, icon("x",20))
   ));
 
+  sheet.appendChild(el("button",{class:"chip",style:{marginBottom:"20px"},
+    onClick:()=>openConfiguracionNegocio(false)}, icon("calendar",14), "Nombre, color y horarios"));
+
+  // PIN
+  const pinBox = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"20px"}},
+    el("div",{},
+      el("p",{style:{fontSize:"13px",fontWeight:"500",margin:"0"}},"Bloqueo con PIN"),
+      el("p",{style:{fontSize:"11px",margin:"2px 0 0",color:"var(--muted)"}},
+        pinActivo() ? "Activado · te lo pedirá al abrir la app" : "Desactivado")
+    ),
+    el("div",{style:{display:"flex",gap:"8px"}},
+      pinActivo() ? el("button",{class:"chip", onClick:()=>{
+        if(confirm("¿Quitar el PIN? Cualquiera podrá abrir la app sin código.")){
+          quitarPin(); render(); openSettings(); toast("PIN desactivado");
+        }
+      }}, "Quitar") : null,
+      el("button",{class:"chip", onClick:openConfigurarPin}, pinActivo() ? "Cambiar" : "Activar")
+    )
+  );
+  sheet.appendChild(pinBox);
+
   // backup
   const backup = el("div",{style:{marginBottom:"20px"}},
     el("p",{style:{fontSize:"12px",fontWeight:"500",margin:"0 0 8px",color:"var(--muted)"}},"Copia de seguridad"),
     el("div",{style:{display:"flex",gap:"8px"}},
       el("button",{class:"primary",style:{flex:"1",height:"44px",display:"flex",alignItems:"center",justifyContent:"center",gap:"8px",fontSize:"14px"},
-        onClick:exportar}, icon("download",16),"Exportar"),
+        onClick:exportar}, icon("download",16),"Guardar copia"),
       el("button",{style:{flex:"1",height:"44px",display:"flex",alignItems:"center",justifyContent:"center",gap:"8px",fontSize:"14px",
         background:"#fff",border:"1px solid var(--line)",borderRadius:"12px",color:"var(--ink)",fontWeight:"500"},
-        onClick:()=>$("#fileInput").click()}, icon("upload",16),"Importar")
+        onClick:()=>$("#fileInput").click()}, icon("upload",16),"Recuperar copia")
     ),
     el("p",{style:{fontSize:"11px",lineHeight:"1.4",margin:"8px 0 0",color:"var(--muted)"}},
       "Exporta de vez en cuando y guarda el archivo. Así tendrás un respaldo aunque cambies de móvil.")
@@ -967,6 +1452,47 @@ function sincronizarClientesDesdeCitas(){
   return añadidos;
 }
 
+/* ============ clientas inactivas ============ */
+function openClientasInactivasView(){
+  closeOverlays();
+  const { overlay, sheet } = buildSheet();
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}},"Clientas inactivas"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:closeOverlays}, icon("x",20))
+  ));
+  sheet.appendChild(el("p",{style:{fontSize:"12px",margin:"0 0 14px",color:"var(--muted)"}},
+    "Clientas que hace tiempo que no regresan. Ideal para una campaña por WhatsApp."));
+
+  const lista = clientasInactivas();
+  if(lista.length===0){
+    sheet.appendChild(el("div",{class:"card",style:{padding:"24px 16px",textAlign:"center",borderStyle:"dashed",color:"var(--muted)"}},
+      el("p",{style:{fontSize:"13px",margin:"0"}},"Ninguna clienta lleva 30 días o más sin venir.")));
+  }
+  function etiqueta(dias){
+    if(dias>=90) return "90+ días";
+    if(dias>=60) return "60+ días";
+    return "30+ días";
+  }
+  lista.forEach(item=>{
+    const digits = (item.telefono||"").replace(/\D/g,"");
+    const intl = digits.length===9 ? "34"+digits : digits;
+    const row = el("div",{class:"card",style:{display:"flex",alignItems:"center",gap:"10px",padding:"12px 16px",marginBottom:"8px"}},
+      el("span",{style:{flex:"1",minWidth:"0"}},
+        el("span",{class:"truncate",style:{display:"block",fontSize:"15px",fontWeight:"500"}}, item.nombre),
+        el("span",{style:{display:"block",fontSize:"12px",color:"var(--accent)"}}, etiqueta(item.dias)+" sin venir")
+      )
+    );
+    if(digits){
+      row.appendChild(el("a",{href:"https://wa.me/"+intl, target:"_blank", rel:"noopener",
+        style:{display:"flex",alignItems:"center",justifyContent:"center",height:"36px",width:"36px",borderRadius:"9999px",
+          background:"var(--accentSoft)",color:"var(--accent)",flexShrink:"0"}}, icon("message-circle",16)));
+    }
+    sheet.appendChild(row);
+  });
+
+  document.body.appendChild(overlay);
+}
+
 function openClientesView(opts){
   opts = opts || {};
   closeOverlays();
@@ -1003,6 +1529,9 @@ function openClientesView(opts){
     renderList();
     toast(n>0 ? "Se recuperaron "+n+" clienta"+(n===1?"":"s") : "No había clientas nuevas que recuperar");
   }}, icon("calendar",14), "Recuperar de las citas"));
+  if(!opts.onSelect){
+    addRow.appendChild(el("button",{class:"chip", onClick:()=>openClientasInactivasView()}, icon("clock",14), "Inactivas"));
+  }
   sheet.appendChild(addRow);
 
   const list = el("div",{style:{display:"flex",flexDirection:"column",gap:"8px"}});
@@ -1050,6 +1579,24 @@ function openClienteForm(cliente, opts){
     el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}}, cliente?"Editar clienta":"Nueva clienta"),
     el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:()=>openClientesView(opts)}, icon("x",20))
   ));
+
+  if(cliente){
+    const h = historialCliente(cliente.nombre);
+    sheet.appendChild(el("div",{class:"card",style:{padding:"14px 16px",marginBottom:"18px",display:"flex",flexDirection:"column",gap:"6px"}},
+      el("div",{style:{display:"flex",justifyContent:"space-between",fontSize:"13px"}},
+        el("span",{style:{color:"var(--muted)"}},"Citas en total"),
+        el("span",{class:"tabnum",style:{fontWeight:"600"}}, String(h.totalCitas))),
+      el("div",{style:{display:"flex",justifyContent:"space-between",fontSize:"13px"}},
+        el("span",{style:{color:"var(--muted)"}},"Última visita"),
+        el("span",{class:"tabnum",style:{fontWeight:"600"}}, h.ultimaFecha ? cap(fmtDiaLargo(fromKey(h.ultimaFecha))) : "—")),
+      el("div",{style:{display:"flex",justifyContent:"space-between",fontSize:"13px"}},
+        el("span",{style:{color:"var(--muted)"}},"Total gastado"),
+        el("span",{class:"tabnum",style:{fontWeight:"600",color:"var(--accent)"}}, eur(h.totalGastado))),
+      h.topServicios.length ? el("div",{style:{display:"flex",justifyContent:"space-between",fontSize:"13px",gap:"10px"}},
+        el("span",{style:{color:"var(--muted)",flexShrink:"0"}},"Servicios habituales"),
+        el("span",{style:{textAlign:"right"}}, h.topServicios.join(", "))) : null
+    ));
+  }
 
   const nombreInput = el("input",{class:"field",placeholder:"Nombre de la clienta"});
   nombreInput.value = cliente ? cliente.nombre : "";
@@ -1234,6 +1781,53 @@ async function openDisponibilidad(mesInicial){
 }
 
 /* ============ modal calendario mensual ============ */
+/* ============ estadísticas del mes ============ */
+function openEstadisticasMes(mesInicial){
+  closeOverlays();
+  let viewMonth = (mesInicial instanceof Date) ? new Date(mesInicial.getFullYear(), mesInicial.getMonth(), 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const { overlay, sheet } = buildSheet();
+
+  sheet.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}},
+    el("h3",{class:"serif",style:{fontSize:"20px",margin:"0"}},"Estadísticas"),
+    el("button",{"aria-label":"Cerrar",style:{padding:"4px",color:"var(--muted)"}, onClick:closeOverlays}, icon("x",20))
+  ));
+
+  const nav = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"16px"}});
+  const monthLabel = el("p",{class:"serif",style:{fontSize:"16px",margin:"0"}});
+  nav.appendChild(el("button",{class:"ico","aria-label":"Mes anterior",
+    onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()-1,1); renderStats(); }}, icon("chevron-left",18)));
+  nav.appendChild(monthLabel);
+  nav.appendChild(el("button",{class:"ico","aria-label":"Mes siguiente",
+    onClick:()=>{ viewMonth=new Date(viewMonth.getFullYear(),viewMonth.getMonth()+1,1); renderStats(); }}, icon("chevron-right",18)));
+  sheet.appendChild(nav);
+
+  const lista = el("div",{style:{display:"flex",flexDirection:"column",gap:"8px"}});
+  sheet.appendChild(lista);
+
+  function fila(label, valor){
+    return el("div",{class:"card",style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px"}},
+      el("span",{style:{fontSize:"13px",color:"var(--muted)"}}, label),
+      el("span",{class:"tabnum",style:{fontWeight:"600",fontSize:"14px"}}, valor)
+    );
+  }
+  function renderStats(){
+    monthLabel.textContent = cap(fmtMes(viewMonth));
+    const st = estadisticasMes(viewMonth);
+    lista.innerHTML = "";
+    lista.appendChild(fila("Citas del mes", String(st.totalCitasMes)));
+    lista.appendChild(fila("Servicio más solicitado", st.servicioTop));
+    lista.appendChild(fila("Día con más trabajo", st.diaTop));
+    lista.appendChild(fila("Ticket medio (por cita cobrada)", eur(st.ticketMedio)));
+    lista.appendChild(fila("Ingreso medio por cita agendada", eur(st.ingresoMedioPorCita)));
+  }
+  renderStats();
+
+  sheet.appendChild(el("p",{style:{fontSize:"11px",margin:"14px 0 0",color:"var(--muted)"}},
+    "El ingreso medio por cita agendada cuenta también las que no se cobraron (no vinieron); el ticket medio solo cuenta las cobradas."));
+
+  document.body.appendChild(overlay);
+}
+
 function openMonthView(mesInicial){
   closeOverlays();
   const base = (mesInicial instanceof Date) ? mesInicial : fromKey(selectedKey);
@@ -1258,6 +1852,9 @@ function openMonthView(mesInicial){
 
   sheet.appendChild(el("button",{class:"chip",style:{marginBottom:"14px"},
     onClick:()=>openDisponibilidad(viewMonth)}, icon("download",14), "Compartir disponibilidad"));
+
+  sheet.appendChild(el("button",{class:"chip",style:{marginBottom:"14px",marginLeft:"8px"},
+    onClick:()=>openEstadisticasMes(viewMonth)}, icon("calendar",14), "Estadísticas del mes"));
 
   let modoVacaciones = false;
   const vacBtn = el("button",{class:"chip", onClick:()=>{
@@ -1386,7 +1983,7 @@ function exportar(){
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
   localStorage.removeItem(AVISO_KEY);
-  toast("Backup descargado");
+  toast("Copia guardada");
   render();
 }
 $("#fileInput").addEventListener("change", function(e){
@@ -1406,9 +2003,17 @@ $("#fileInput").addEventListener("change", function(e){
         gastos: p.gastos ? normGastos(p.gastos) : state.gastos,
         ultimoBackup: typeof p.ultimoBackup==="string" ? p.ultimoBackup : state.ultimoBackup,
         vacaciones: Array.isArray(p.vacaciones) ? p.vacaciones.filter(x=>typeof x==="string") : state.vacaciones,
+        negocio: typeof p.negocio==="string" && p.negocio.trim() ? p.negocio : state.negocio,
+        tema: TEMAS[p.tema] ? p.tema : state.tema,
+        horarios: Array.isArray(p.horarios) && p.horarios.length ? p.horarios : state.horarios,
+        logo: typeof p.logo==="string" ? p.logo : state.logo,
+        piePersonalizado: typeof p.piePersonalizado==="string" ? p.piePersonalizado : state.piePersonalizado,
+        configurado: true,
       };
-      save(); closeOverlays(); render(); toast("Backup restaurado");
-    }catch(err){ toast("El archivo no es un backup válido"); }
+      aplicarTema(state.tema);
+      aplicarNombreNegocio(state.negocio);
+      save(); closeOverlays(); render(); toast("Copia recuperada");
+    }catch(err){ toast("El archivo no es una copia válida"); }
   };
   reader.readAsText(file);
   e.target.value="";
@@ -1416,7 +2021,15 @@ $("#fileInput").addEventListener("change", function(e){
 
 /* ============ arranque ============ */
 load();
-render();
+function arrancarApp(){
+  render();
+  if(!state.configurado) openConfiguracionNegocio(true);
+}
+if(pinActivo() && !sessionStorage.getItem(PIN_SESSION_KEY)){
+  mostrarPantallaBloqueo(arrancarApp);
+} else {
+  arrancarApp();
+}
 </script>
 </body>
 </html>
